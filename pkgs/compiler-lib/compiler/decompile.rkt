@@ -108,33 +108,8 @@
                                   #:when (exact-integer? k))
                          k)
                        <))
-  (define-values (mpi-vector requires provides)
-    (let ([data-l (hash-ref ht 'data #f)]
-          [decl-l (hash-ref ht 'decl #f)])
-      (define (zo->linklet l)
-        (cond
-          [(faslable-correlated-linklet? l)
-           (compile-linklet (strip-correlated (faslable-correlated-linklet-expr l))
-                            (faslable-correlated-linklet-name l))]
-          [(linklet? l) l]
-          [else
-           (let ([o (open-output-bytes)])
-             (zo-marshal-to (linkl-bundle (hasheq 'data l)) o)
-             (parameterize ([read-accept-compiled #t])
-               (define b (read (open-input-bytes (get-output-bytes o))))
-               (hash-ref (linklet-bundle->hash b) 'data)))]))
-      (cond
-        [(and data-l
-              decl-l)
-         (define data-i (instantiate-linklet (zo->linklet data-l)
-                                             (list deserialize-instance)))
-         (define decl-i (instantiate-linklet (zo->linklet decl-l)
-                                             (list deserialize-instance
-                                                   data-i)))
-         (values (instance-variable-value data-i '.mpi-vector)
-                 (instance-variable-value decl-i 'requires)
-                 (instance-variable-value decl-i 'provides))]
-        [else (values '#() '() '#hasheqv())])))
+  (define-values (mpi-vector requires provides phase-to-link-modules)
+    (deserialize-requires-and-provides l))
   (define (phase-wrap phase l)
     (case phase
       [(0) l]
@@ -248,18 +223,23 @@
     [(? linklet?)
      (case (system-type 'vm)
        [(chez-scheme)
-        (define-values (fmt code sfd-paths args) ((vm-primitive 'linklet-fasled-code+arguments) l))
+        (define-values (fmt code literals) ((vm-primitive 'linklet-fasled-code+arguments) l))
         (cond
           [code
            (case fmt
              [(compile)
-              (define proc ((vm-eval `(load-compiled-from-port (open-bytevector-input-port ,code) ',sfd-paths))))
-              (let ([proc (decompile-chez-procedure (if (null? args) proc (apply proc args)))])
-                (if (null? args)
-                    proc
-                    (cons proc (map (vm-primitive 'force-unfasl) args))))]
+              (cond
+                [(not (current-partial-fasl))
+                 (define proc (vm-eval `(load-compiled-from-port (open-bytevector-input-port ,code) ',literals)))
+                 (decompile-chez-procedure proc)]
+                [else
+                 (disassemble-in-description
+                  `(#(FASL
+                      #:length ,(bytes-length code)
+                      #:literals ,literals
+                      ,(vm-eval `(($primitive $describe-fasl-from-port) (open-bytevector-input-port ,code) ',literals)))))])]
              [(interpret)
-              (define bytecode (vm-eval `(fasl-read (open-bytevector-input-port ,code) 'load ',sfd-paths)))
+              (define bytecode (vm-eval `(fasl-read (open-bytevector-input-port ,code) 'load ',literals)))
               (list `(#%interpret ,(unwrap-chez-interpret-jitified bytecode)))]
              [else
               '(....)])]
@@ -282,9 +262,9 @@
                                   num-shares share-vec
                                   mutable-fill-vec
                                   result-vec)]
-           [else
+           [_
             (decompile-linklet l)])]
-       [else
+       [_
         (decompile-linklet l)])]
     [(struct faslable-correlated-linklet (expr name))
      (match (strip-correlated expr)
@@ -307,9 +287,9 @@
                                num-shares share-vec
                                mutable-fill-vec
                                result-vec)]
-       [else
+       [_
         (decompile-linklet l)])]
-    [else
+    [_
      (decompile-linklet l)]))
      
 (define (decompile-form form globs stack closed)
@@ -330,7 +310,7 @@
      `(begin ,@(map (lambda (form)
                       (decompile-form form globs stack closed))
                     forms))]
-    [else
+    [_
      (decompile-expr form globs stack closed)]))
 
 (define (extract-name name)
@@ -348,7 +328,7 @@
      (extract-name name)]
     [(struct closure (lam gen-id))
      (extract-id lam)]
-    [else #f]))
+    [_ #f]))
 
 (define (extract-ids! body ids)
   (match body
@@ -362,7 +342,7 @@
      (extract-ids! body ids)]
     [(struct boxenv (pos body))
      (extract-ids! body ids)]
-    [else #f]))
+    [_ #f]))
 
 (define (decompile-tl expr globs stack closed no-check?)
   (match expr
@@ -441,10 +421,10 @@
        `(begin
           (set! ,id (#%box ,id))
           ,(decompile-expr body globs stack closed)))]
-    [(struct branch (test then else))
+    [(struct branch (test then els))
      `(if ,(decompile-expr test globs stack closed)
           ,(decompile-expr then globs stack closed)
-          ,(decompile-expr else globs stack closed))]
+          ,(decompile-expr els globs stack closed))]
     [(struct application (rator rands))
      (let ([stack (append (for/list ([i (in-list rands)]) (gensym 'rand))
                           stack)])
@@ -485,7 +465,7 @@
            (hash-set! closed gen-id #t)
            `(#%closed ,gen-id ,(decompile-expr lam globs stack closed))))]
     [(? void?) (list 'void)]
-    [else `(quote ,expr)]))
+    [_ `(quote ,expr)]))
 
 (define (decompile-lam expr globs stack closed)
   (match expr
@@ -778,24 +758,6 @@
     [else
      (error 'deserialize "bad fill encoding: ~v" (vector-ref vec pos))]))
   
-;; ----------------------------------------
-
-(struct faslable-correlated-linklet (expr name)
-  #:prefab)
-
-(struct faslable-correlated (e source position line column span props)
-  #:prefab)
-
-(define (strip-correlated v)
-  (let strip ([v v])
-    (cond
-      [(pair? v)
-       (cons (strip (car v))
-             (strip (cdr v)))]
-      [(faslable-correlated? v)
-       (strip (faslable-correlated-e v))]
-      [else v])))
-
 ;; ----------------------------------------
 
 #;

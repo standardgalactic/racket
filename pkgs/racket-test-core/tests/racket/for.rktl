@@ -622,6 +622,35 @@
                       (values (car pr) (cdr pr)))])
         (list firsts seconds other)))
 
+(test '()
+      'for/lists-split-body
+      (for/lists (lst) ([x '()])
+        #:break #f
+        x))
+(test '()
+      'for/lists-split-body
+      (for/lists (lst) ([x '()])
+        (define-syntax (m stx) #'0)
+        m))
+(test '()
+      'for*/lists-split-body
+      (for*/lists (lst) ([x '()])
+        #:break #f
+        x))
+(test '()
+      'for*/lists-split-body
+      (for*/lists (lst) ([x '()])
+        (define-syntax (m stx) #'0)
+        m))
+
+(test '(bad 1)
+      'for/lists-weird-set!
+      (for/lists (acc)
+          ([v (in-range 2)])
+        (unless (zero? v)
+          (set! acc '(bad)))
+        v))
+
 ;; for should discard any results and return void
 (test (void) 'for-0-values (for ([x '(1 2 3)] [y '(a b c)]) (values)))
 (test (void) 'for*-0-values (for* ([x '(1 2 3)] [y '(a b c)]) (values)))
@@ -647,7 +676,7 @@
              #rx".*expected number of values not received.*")
 (err/rt-test (begin (for/fold ([x 1]) () (values 1 2)) 1)
              exn:fail:contract:arity?
-             #rx"expected number of values not received|returned two values to single value return context")
+             #rx"expected number of values not received")
 (err/rt-test (begin (for/fold ([x 1] [y 2]) ([i (in-range 10)]) 1) 1)
              exn:fail:contract:arity?
              #rx".*expected number of values not received.*")
@@ -724,7 +753,7 @@
              #rx"expected: hash\\?")
 (err/rt-test (for ([x (in-hash (hash 1 2))]) x)
              exn:fail:contract:arity?
-             #rx"expected number of values not received|returned two values to single value return context")
+             #rx"expected number of values not received")
 
 (err/rt-test (for ([x (in-hash 1 2 3)]) x)
              exn:fail:contract:arity?)
@@ -1124,6 +1153,54 @@
   (test #f 'for/foldr-result-delay-1 evaluated?)
   (test (void) 'for/foldr-result-delay-2 (force result))
   (test #t 'for/foldr-result-delay-3 evaluated?))
+
+;; same expansion (from @soegaard)
+(let ()
+  (test #t 'same-expansion-for-integer-clause
+        (equal? (syntax->datum (expand #'(for ([j 100]) j)))
+                (syntax->datum (expand #'(for ([j (in-range 100)]) j)))))
+
+  (test #t 'same-expansion-for-list-clause
+        (equal? (syntax->datum (expand #'(for ([j '(1 2 3)]) j)))
+                (syntax->datum (expand #'(for ([j (in-list '(1 2 3))]) j)))))
+
+  (test #t 'same-expansion-for-vector-clause
+        (equal? (syntax->datum (expand #'(for ([j #(1 2 3)]) j)))
+                (syntax->datum (expand #'(for ([j (in-vector #(1 2 3))]) j)))))
+
+  (test #t 'same-expansion-for-hash-clause
+        (equal? (syntax->datum (expand #'(for ([(i j) #hash((1 . 2) (3 . 4))]) j)))
+                (syntax->datum (expand #'(for ([(i j) (in-immutable-hash #hash((1 . 2) (3 . 4)))]) j)))))
+
+  (test #t 'same-expansion-for-string-clause
+        (equal? (syntax->datum (expand #'(for ([j "abc"]) j)))
+                (syntax->datum (expand #'(for ([j (in-string "abc")]) j)))))
+
+  (test #t 'same-expansion-for-bytes-clause
+        (equal? (syntax->datum (expand #'(for ([j #"abc"]) j)))
+                (syntax->datum (expand #'(for ([j (in-bytes #"abc")]) j))))))
+
+;; #%datum is picked up (from @gus-massa)
+(let ()
+  (local-require (only-in racket (#%datum #%old-datum)))
+  (define-syntax-rule (#%datum . x) (#%old-datum . 3))
+  (test-sequence [(0 1 2)] 5))
+
+;; for expanded in expression context
+(module test-for-expansion racket
+  (provide foo%)
+  (define foo%
+    (class object%
+      (super-new)
+      (define/public (bar) 1)
+      (for ([x (bar)]) #t))))
+
+(let ()
+  (local-require 'test-for-expansion)
+  (test #t object? (new foo%)))
+
+(err/rt-test (for/list ([x -1]) x))
+(err/rt-test (for/list ([x 1.5]) x))
 
 ;; ----------------------------------------
 

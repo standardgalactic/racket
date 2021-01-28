@@ -1,14 +1,17 @@
 
 (define raise
   (case-lambda
-    [(v) (raise v #t)]
-    [(v barrier?)
-     (if barrier?
-         (call-with-continuation-barrier
-          (lambda ()
-            (do-raise v)))
-         (do-raise v))]))
+   [(v) (#%$app/no-return do-raise/barrier v)]
+   [(v barrier?)
+    (if barrier?
+        (#%$app/no-return do-raise/barrier v)
+        (#%$app/no-return do-raise v))]))
 
+(define (do-raise/barrier v)
+  (call-with-continuation-barrier
+   (lambda ()
+     (do-raise v))))
+  
 (define (do-raise v)
   (let ([get-next-h (continuation-mark-set->iterator (current-continuation-marks/no-trace)
                                                      (list exception-handler-key)
@@ -131,7 +134,7 @@
     (raise-argument-error 'raise-arguments-error "symbol?" who))
   (unless (string? what)
     (raise-argument-error 'raise-arguments-error "string?" what))
-  (do-raise-arguments-error who what exn:fail:contract more))
+  (#%$app/no-return do-raise-arguments-error who what exn:fail:contract more))
   
 (define (do-raise-arguments-error who what exn:fail:contract more)
   (raise
@@ -224,16 +227,16 @@
 (define raise-argument-error
   (case-lambda
     [(who what arg)
-     (do-raise-argument-error 'raise-argument-error "given" who what #f arg #f)]
+     (#%$app/no-return do-raise-argument-error 'raise-argument-error "given" who what #f arg #f)]
     [(who what pos arg . args)
-     (do-raise-argument-error 'raise-argument-error "given" who what pos arg args)]))
+     (#%$app/no-return do-raise-argument-error 'raise-argument-error "given" who what pos arg args)]))
 
 (define raise-result-error
   (case-lambda
     [(who what arg)
-     (do-raise-argument-error 'raise-result-error "result" who what #f arg #f)]
+     (#%$app/no-return do-raise-argument-error 'raise-result-error "result" who what #f arg #f)]
     [(who what pos arg . args)
-     (do-raise-argument-error 'raise-result-error "result" who what pos arg args)]))
+     (#%$app/no-return do-raise-argument-error 'raise-result-error "result" who what pos arg args)]))
 
 (define (do-raise-type-error e-who tag who what pos arg args)
   (unless (symbol? who)
@@ -269,9 +272,9 @@
 (define raise-type-error
   (case-lambda
     [(who what arg)
-     (do-raise-type-error 'raise-argument-error "given" who what #f arg #f)]
+     (#%$app/no-return do-raise-type-error 'raise-argument-error "given" who what #f arg #f)]
     [(who what pos arg . args)
-     (do-raise-type-error 'raise-argument-error "given" who what pos arg args)]))
+     (#%$app/no-return do-raise-type-error 'raise-argument-error "given" who what pos arg args)]))
 
 (define/who (raise-mismatch-error in-who what v . more)
   (check who symbol? in-who)
@@ -426,20 +429,24 @@
     (current-continuation-marks))))
 
 (define (raise-binding-result-arity-error expected-args args)
-  (apply raise-result-arity-error #f
-         (length expected-args)
-         "\n  in: local-binding form"
-         args))
+  (|#%app/no-return| #%apply
+   raise-result-arity-error #f
+   (if (integer? expected-args)
+       expected-args
+       (length expected-args))
+   "\n  in: local-binding form"
+   args))
 
 (define (raise-definition-result-arity-error expected-args args)
-  (apply raise-result-arity-error 'define-values
-         (length expected-args)
-         (if (null? expected-args)
-             ""
-             (string-append "\n  in: definition of "
-                            (symbol->string (car expected-args))
-                            " ..."))
-         args))
+  (|#%app/no-return| #%apply
+   raise-result-arity-error 'define-values
+   (length expected-args)
+   (if (null? expected-args)
+       ""
+       (string-append "\n  in: definition of "
+                      (symbol->string (car expected-args))
+                      " ..."))
+   args))
 
 (define raise-unsupported-error
   (case-lambda
@@ -457,12 +464,11 @@
   (fields value))
 
 (define make-unquoted-printing-string
-  (let ([unquoted-printing-string
-         (escapes-ok
-           (lambda (s)
-             (check 'unquoted-printing-string string? s)
-             (new-unquoted-printing-string s)))])
-    unquoted-printing-string))
+  (|#%name|
+   unquoted-printing-string
+   (lambda (s)
+     (check 'unquoted-printing-string string? s)
+     (new-unquoted-printing-string s))))
 
 ;; ----------------------------------------
 
@@ -532,6 +538,10 @@
 ;; uses even more memory.
 (define trace-length-limit 65535)
 
+(define suppress-generation-in-trace (if (getenv "PLT_SHOW_BUILTIN_CONTEXT")
+                                         255
+                                         (collect-maximum-generation)))
+
 ;; Convert a continuation to a list of function-name and
 ;; source information. Cache the result half-way up the
 ;; traversal, so that it's amortized constant time.
@@ -555,13 +565,14 @@
                                     (let ([n (extract-mark-from-frame (car attachments) linklet-instantiate-key #f)])
                                       (and n
                                            (string->symbol (format "body of ~a" n)))))))
-                        (let* ([c (if offset
-                                      (#%$continuation-stack-return-code k offset)
-                                      (#%$continuation-return-code k))]
-                               [n (#%$code-name c)])
-                          (if (path-or-empty-procedure-name-string? n)
-                              #f
-                              n)))]
+                        (let ([c (if offset
+                                     (#%$continuation-stack-return-code k offset)
+                                     (#%$continuation-return-code k))])
+                          (and (not (fx> (#%$generation c) suppress-generation-in-trace))
+                               (let ([n (#%$code-name c)])
+                                 (if (path-or-empty-procedure-name-string? n)
+                                     #f
+                                     n)))))]
               [desc
                (let* ([ci (#%$code-info (if offset
                                             (#%$continuation-stack-return-code k offset)
@@ -654,11 +665,19 @@
      [else
       (let* ([p (car l)]
              [name (and (car p)
-                        (procedure-name-string->visible-name-string (car p)))]
+                        (let ([s (procedure-name-string->visible-name-string (car p))])
+                          (if (string? s)
+                              (string->symbol s)
+                              s)))]
              [loc (and (cdr p)
                        (call-with-values (lambda ()
                                            (let* ([src (cdr p)]
-                                                  [path (source-file-descriptor-path (source-object-sfd src))])
+                                                  [path (source-file-descriptor-path (source-object-sfd src))]
+                                                  [path (if (srcloc? path)
+                                                            ;; The linklet layer wraps paths in `srcloc` to trigger specific
+                                                            ;; marshaling behavior
+                                                            (srcloc-source path)
+                                                            path)])
                                              (if (source-object-line src)
                                                  (values path
                                                          (source-object-line src)
@@ -681,13 +700,37 @@
   (when (or (continuation-condition? v)
             (and (exn? v)
                  (not (exn:fail:user? v))))
-    (let ([n (|#%app| error-print-context-length)])
-      (unless (zero? n)
+    (let* ([n (|#%app| error-print-context-length)]
+           [locs (if (and (exn:srclocs? v)
+                          (not (zero? n)))
+                     ((exn:srclocs-accessor* v) v)
+                     '())]
+           [l (if (zero? n)
+                  '()
+                  (traces->context
+                   (if (exn? v)
+                       (continuation-mark-set-traces (exn-continuation-marks v))
+                       (list (continuation->trace (condition-continuation v))))))])
+      (unless (null? locs)
+        (unless (and (list? locs)
+                     (andmap srcloc? locs))
+          (raise-result-error '|prop:exn:srclocs procedure| "(listof srcloc?)" locs))
+        (let ([locs
+               ;; Some exns are expected to include srcloc in the msg,
+               ;; so skip the first srcloc of those
+               (if (and (or (exn:fail:read? v)
+                            (exn:fail:contract:variable? v))
+                        (error-print-source-location))
+                   (cdr locs)
+                   locs)])
+          (unless (null? locs)
+            (eprintf "\n  location...:")
+            (#%for-each (lambda (sl)
+                          (eprintf (string-append "\n   " (srcloc->string sl))))
+                        locs))))
+      (unless (null? l)
         (eprintf "\n  context...:")
-        (let loop ([l (traces->context
-                       (if (exn? v)
-                           (continuation-mark-set-traces (exn-continuation-marks v))
-                           (list (continuation->trace (condition-continuation v)))))]
+        (let loop ([l l]
                    [prev #f]
                    [repeats 0]
                    [n n])
@@ -721,11 +764,22 @@
   (lambda (fmt . args)
     (apply fprintf (current-error-port) fmt args)))
 
+(define srcloc->string
+  (lambda (srcloc)
+    (#%format "~s" srcloc)))
+
+(define error-print-source-location
+  (lambda () #f))
+
 (define (emergency-error-display-handler msg v)
   (log-system-message 'error msg))
 
-(define (set-error-display-eprintf! proc)
-  (set! eprintf proc))
+(define (set-error-display-eprintf! proc
+                                    srcloc->string-proc
+                                    error-print-source-location-proc)
+  (set! eprintf proc)
+  (set! srcloc->string srcloc->string-proc)
+  (set! error-print-source-location error-print-source-location-proc))
 
 (define (default-error-escape-handler)
   (abort-current-continuation (default-continuation-prompt-tag) void))

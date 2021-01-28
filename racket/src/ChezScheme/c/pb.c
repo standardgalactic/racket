@@ -17,6 +17,9 @@ typedef uint32_t instruction_t;
 #define INSTR_di_imm(instr)   (((int32_t)(instr)) >> 16)
 #define INSTR_di_imm_unsigned(instr) ((instr) >> 16)
 
+#define INSTR_adr_dest(instr) INSTR_di_dest(instr)
+#define INSTR_adr_imm(instr)  (((int32_t)(instr)) >> 12)
+
 #define INSTR_drr_dest(instr) INSTR_d_dest(instr)
 #define INSTR_drr_reg1(instr) (((instr) >> 12) & 0xF)
 #define INSTR_drr_reg2(instr) (((instr) >> 16) & 0xF)
@@ -57,7 +60,7 @@ void S_machine_init() {}
 
 #define SIGN_FLIP(r, a, b) ((~((a ^ b) | (r ^ ~b))) >> (ptr_bits-1))
 
-#if __GNUC__ >= 5
+#if (__GNUC__ >= 5) || defined(__clang__)
 # define USE_OVERFLOW_INTRINSICS 1
 #else
 # define USE_OVERFLOW_INTRINSICS 0
@@ -398,6 +401,20 @@ void S_pb_interp(ptr tc, void *bytecode) {
         flag = (r == 0);
       }
       break;
+    case pb_bin_op_pb_signal_pb_subp_pb_register:
+      {
+        iptr r = regs[INSTR_drr_reg1(instr)] - regs[INSTR_drr_reg2(instr)];
+        regs[INSTR_drr_dest(instr)] = r;
+        flag = (r > 0);
+      }
+      break;
+    case pb_bin_op_pb_signal_pb_subp_pb_immediate:
+      {
+        iptr r = regs[INSTR_dri_reg(instr)] - (uptr)INSTR_dri_imm(instr);
+        regs[INSTR_dri_dest(instr)] = r;
+        flag = (r > 0);
+      }
+      break;
     case pb_cmp_op_pb_eq_pb_register:
       flag = regs[INSTR_dr_dest(instr)] == regs[INSTR_dr_reg(instr)];
       break;
@@ -535,7 +552,16 @@ void S_pb_interp(ptr tc, void *bytecode) {
       regs[INSTR_drr_dest(instr)] = *(int8_t *)TO_VOIDP(regs[INSTR_drr_reg1(instr)] + regs[INSTR_drr_reg2(instr)]);
       break;
     case pb_ld_op_pb_int8_pb_immediate:
+#if defined(__arm__)
+      /* Complicated load to avoid an internal compiler error from an old gcc on Raspbian: */
+      {
+        int8_t v;
+        memcpy(&v, TO_VOIDP(regs[INSTR_dri_reg(instr)] + INSTR_dri_imm(instr)), sizeof(int8_t));
+        regs[INSTR_dri_dest(instr)] = v;
+      }
+#else
       regs[INSTR_dri_dest(instr)] = *(int8_t *)TO_VOIDP(regs[INSTR_dri_reg(instr)] + INSTR_dri_imm(instr));
+#endif
       break;
     case pb_ld_op_pb_uint8_pb_register:
       regs[INSTR_drr_dest(instr)] = *(uint8_t *)TO_VOIDP(regs[INSTR_drr_reg1(instr)] + regs[INSTR_drr_reg2(instr)]);
@@ -664,7 +690,7 @@ void S_pb_interp(ptr tc, void *bytecode) {
     case pb_return:
       return; /* <--- not break */
     case pb_adr:
-      regs[INSTR_di_dest(instr)] = (uptr)TO_PTR(next_ip) + INSTR_di_imm(instr);
+      regs[INSTR_adr_dest(instr)] = (uptr)TO_PTR(next_ip) + INSTR_adr_imm(instr);
       break;
     case pb_interp:
       {
@@ -840,6 +866,10 @@ void S_pb_interp(ptr tc, void *bytecode) {
         case pb_call_uptr_int32_int32_uptr_uptr:
           regs[Cretval] = ((pb_uptr_int32_int32_uptr_uptr_t)proc)(regs[Carg1], regs[Carg2], regs[Carg3],
                                                                   regs[Carg4]);
+          break;
+        case pb_call_uptr_int32_int32_int32_uptr:
+          regs[Cretval] = ((pb_uptr_int32_int32_int32_uptr_t)proc)(regs[Carg1], regs[Carg2], regs[Carg3],
+                                                                   regs[Carg4]);
           break;
         case pb_call_uptr_int32_voids_uptr_uptr:
           regs[Cretval] = ((pb_uptr_int32_voids_uptr_uptr_t)proc)(regs[Carg1], TO_VOIDP(regs[Carg2]), regs[Carg3],

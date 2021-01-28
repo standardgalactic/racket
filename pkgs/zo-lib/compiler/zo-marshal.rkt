@@ -13,7 +13,8 @@
          racket/set
          racket/extflonum
          racket/private/truncate-path
-         racket/fasl)
+         racket/fasl
+         "private/opaque.rkt")
 
 (provide/contract
  [zo-marshal ((or/c linkl-directory? linkl-bundle?) . -> . bytes?)]
@@ -36,7 +37,7 @@
     [(linkl-bundle table)
      ;; single linklet bundle:
      (zo-marshal-bundle-to table outp)]
-    [else
+    [_
      (error 'zo-marshal-top "not a linklet bundle or directory:" top)]))
 
 (define (zo-marshal-directory-to top outp)
@@ -157,9 +158,10 @@
      (s-exp->fasl (hash-remove top 'vm) outp)]
     [(#"chez-scheme")
      (write-bundle-header #"chez-scheme" outp)
-     (define bstr (hash-ref top 'opaque
-                            (lambda ()
-                              (error 'zo-marshal "missing 'opaque for chez-scheme virtual-machine format"))))
+     (define opaque (hash-ref top 'opaque
+                              (lambda ()
+                                (error 'zo-marshal "missing 'opaque for chez-scheme virtual-machine format"))))
+     (define bstr (opaque-bstr opaque))
      (write-bytes (integer->integer-bytes (bytes-length bstr) 4 #f #f) outp)
      (write-bytes bstr outp)]
     [else
@@ -616,11 +618,11 @@
         (out-number boxenv-type-num out)
         (out-anything pos out)
         (out-anything (protect-quote body) out)]
-       [(struct branch (test then else))
+       [(struct branch (test then els))
         (out-byte CPT_BRANCH out)
         (out-anything (protect-quote test) out)
         (out-anything (protect-quote then) out)
-        (out-anything (protect-quote else) out)]
+        (out-anything (protect-quote els) out)]
        [(struct application (rator rands))
         (let ([len (length rands)]) 
           (if (len . < . (- CPT_SMALL_APPLICATION_END CPT_SMALL_APPLICATION_START))
@@ -826,7 +828,7 @@
         (define bstr (get-output-bytes s))
         (out-number (bytes-length bstr) out)
         (out-bytes bstr out)]
-       [else (error 'out-anything "~s" (current-type-trace))])))))
+       [_ (error 'out-anything "~s" (current-type-trace))])))))
 
 (define (out-linklet linklet-form out)
   (out-byte CPT_LINKLET out)

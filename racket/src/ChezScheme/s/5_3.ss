@@ -663,6 +663,10 @@
                              (floatable? (imag-part x)))]
          [else #t])))
 
+(define exact-integer-fits-float?
+  (lambda (x)
+    (<= (- (expt 2 53)) x (expt 2 53))))
+
 (define exact-inexact-compare?
    ; e is an exact number, i is a flonum
    ; Preserve transitivity by making i exact,
@@ -1471,8 +1475,8 @@
                  0)]
             [(eq? x 1) 1]
             [(eq? x 2) (if (< y 0) (/ (ash 1 (- y))) (ash 1 y))]
-            [(and (flonum? x) (floatable? y)) ($flexpt x (inexact y))]
-            [(and ($inexactnum? x) (floatable? y)) (exp (* y (log x)))]
+            [(and (flonum? x) (exact-integer-fits-float? y)) ($flexpt x (inexact y))]
+            [(and ($inexactnum? x) (exact-integer-fits-float? y)) (exp (* y (log x)))]
             [(not (number? x)) (nonnumber-error 'expt x)]
             [(ratnum? x)
              (if (< y 0)
@@ -1482,10 +1486,14 @@
             [else
              (let ()
                (define (f x n)
-                 (if (eq? n 1)
-                     x
-                     (let ([s (f x (ash n -1))])
-                        (if (even? n) (* s s) (* (* s s) x)))))
+                 (let loop ([i (integer-length n)] [a 1])
+                   (let ([a (if (bitwise-bit-set? n i)
+                                (* a x)
+                                a)])
+                     (if (fx= i 0)
+                         a
+                         (loop (fx- i 1)
+                               (* a a))))))
                (if (< y 0)
                    (if (or (fixnum? x) (bignum? x))
                        (/ (f x (- y)))
@@ -1943,13 +1951,17 @@
       [else (domain-error who y)])))
 
 (set-who! remainder
-  (let ([f (lambda (x y)
-             (let ([r (- x (* (quotient x y) y))])
-               ;;; filter out outrageous results
-               ;;; try (remainder 1e194 10.0) without this hack...
-               (if (if (negative? y) (> r y) (< r y))
-                   r
-                   0.0)))])
+  (let* ([fmod (cflop2 "(cs)mod")]
+         [f (lambda (x y)
+              (cond
+                [(eqv? x 0) 0]
+                [else
+                 (let ([r (fmod (real->flonum x) (real->flonum y))])
+                   (if (fl= r 0.0)
+                       ;; Always return positive 0.0 --- not sure why,
+                       ;; but Racket and other Schemes seem to agree
+                       0.0
+                       r))]))])
     (lambda (x y)
       (type-case y
         [(fixnum?)
@@ -2769,19 +2781,26 @@
          (random-double s)]
         [(s x)
          (define (random-integer s x)
-           (modulo (let loop ([bits (integer-length x)])
-                     (cond
-                      [(<= bits 0) 0]
-                      [else (bitwise-ior (bitwise-arithmetic-shift-left (loop (- bits 24)) 24)
-                                         (random-int s #xFFFFFF))]))
-                   x))
+           (let ([bits (integer-length x)])
+             (let loop ([shift 0])
+               (cond
+                 [(<= bits shift) 0]
+                 [else
+                  ;; Assuming that a `uptr` is at least 32 bits:
+                  (bitwise-ior (loop (+ shift 32))
+                               (let ([n (bitwise-bit-field x shift (+ shift 32))])
+                                 (if (zero? n)
+                                     0
+                                     (bitwise-arithmetic-shift-left
+                                      (random-int s n)
+                                      shift))))]))))
          (unless (is-pseudo-random-generator? s) ($oops who "not a pseudo-random generator ~s" s))
          (cond
           [(fixnum? x)
            (unless (fxpositive? x) ($oops who "not a positive exact integer ~s" x))
            (meta-cond
-            [(fixnum? 4294967087)
-             (if (fx< x 4294967087)
+            [(<= (constant most-negative-fixnum) 4294967087 (constant most-positive-fixnum))
+             (if (fx<= x 4294967087)
                  (random-int s x)
                  (random-integer s x))]
             [else

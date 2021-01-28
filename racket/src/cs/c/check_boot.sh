@@ -24,11 +24,12 @@ check_pb scheme.h
 check_pb equates.h
 check_pb gc-ocd.inc
 check_pb gc-oce.inc
-check_pb vfasl.inc
+check_pb gc-par.inc
+check_pb heapcheck.inc
 
 check_mach()
 {
-    SRC=$SCHEME_DIR/boot/pb/$1
+    SRC="$SCHEME_DIR"/boot/pb/$1
     INIT=$SCHEME_WORKAREA/boot/$MACH/$1
     if [ ! -e $INIT ] ; then
         touch boot_pending
@@ -43,4 +44,5 @@ check_mach scheme.h
 check_mach equates.h
 check_mach gc-ocd.inc
 check_mach gc-oce.inc
-check_mach vfasl.inc
+check_mach gc-par.inc
+check_mach heapcheck.inc

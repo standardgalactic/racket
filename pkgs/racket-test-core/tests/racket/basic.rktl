@@ -4,6 +4,7 @@
 (Section 'basic)
 
 (require racket/flonum
+         racket/fixnum
          racket/function
          racket/list
          racket/symbol
@@ -475,6 +476,7 @@
 (test #f eq? (symbol->string 'apple) (symbol->string 'apple))
 (test "apple" symbol->immutable-string 'apple)
 (test #t immutable? (symbol->immutable-string 'apple))
+(test #t immutable? (symbol->immutable-string 'box))
 
 #ci(test #t eq? 'mISSISSIppi 'mississippi)
 #ci(test #f 'string->symbol (eq? 'bitBlt (string->symbol "bitBlt")))
@@ -820,6 +822,7 @@
 (err/rt-test (string-set! hello-string 5 #\a) exn:application:mismatch?)
 (err/rt-test (string-set! hello-string -1 #\a))
 (err/rt-test (string-set! hello-string (expt 2 100) #\a) exn:application:mismatch?)
+(err/rt-test (string-set! (string #\4 #\5 #\6) 4 #\?) exn:fail:contract? #rx"[[]0, 2[]]")
 (test "abc" string #\a #\b #\c)
 (test "" string)
 (err/rt-test (string #\a 1))
@@ -839,6 +842,7 @@
 (err/rt-test (string-ref "" 0) exn:application:mismatch?)
 (err/rt-test (string-ref "" (expt 2 100)) exn:application:mismatch?)
 (err/rt-test (string-ref "apple" -1))
+(err/rt-test (string-ref "456" 4) exn:fail:contract? #rx"[[]0, 2[]]")
 (test "" substring "ab" 0 0)
 (test "" substring "ab" 1 1)
 (test "" substring "ab" 2 2)
@@ -1146,6 +1150,7 @@
 (err/rt-test (bytes-set! hello-bytes 5 97) exn:application:mismatch?)
 (err/rt-test (bytes-set! hello-bytes -1 97))
 (err/rt-test (bytes-set! hello-bytes (expt 2 100) 97) exn:application:mismatch?)
+(err/rt-test (bytes-set! (bytes 4 5 6) 4 0) exn:fail:contract? #rx"[[]0, 2[]]")
 (test #"abc" bytes 97 98 99)
 (test #"" bytes)
 (err/rt-test (bytes #\a 1))
@@ -1165,6 +1170,7 @@
 (err/rt-test (bytes-ref #"" 0) exn:application:mismatch?)
 (err/rt-test (bytes-ref #"" (expt 2 100)) exn:application:mismatch?)
 (err/rt-test (bytes-ref #"apple" -1))
+(err/rt-test (bytes-ref (bytes 4 5 6) 4) exn:fail:contract? #rx"[[]0, 2[]]")
 (test #"" subbytes #"ab" 0 0)
 (test #"" subbytes #"ab" 1 1)
 (test #"" subbytes #"ab" 2 2)
@@ -2123,6 +2129,25 @@
            (escape1 3))))))))
  (sync ch))
 
+;; Make sure allocation and continuation capture are left-to-right in
+;; a function call:
+(let ([join (if (zero? (random 1)) list 'oops)])
+  (let ([k0 (cadr
+             (call-with-continuation-prompt
+              (lambda ()
+                (join (cons 1 2)
+                      (call/cc (lambda (k) k))))))]
+        [k1 (car
+             (call-with-continuation-prompt
+              (lambda ()
+                (join (call/cc (lambda (k) k))
+                      (cons 1 2)))))])
+    (define (do-k k) (call-with-continuation-prompt
+                      (lambda ()
+                        (k k))))
+    (test #t eq? (car (do-k k0)) (car (do-k k0)))
+    (test #f eq? (cadr (do-k k1)) (cadr (do-k k1)))))
+
 (arity-test call/cc 1 2)
 (arity-test call/ec 1 1)
 (err/rt-test (call/cc 4))
@@ -2385,6 +2410,7 @@
           [a (make-a 1 (make-a 2 3))]
           [b (box (list 1 2 3))]
           [fl (flvector 1.0 +nan.0 0.0)]
+          [fx (fxvector 1 -2 0)]
           [cyclic-list (read (open-input-string "#2=(#1=(#2#) #2#)"))])
 
       (test 0 hash-count h1)
@@ -2399,7 +2425,8 @@
                      (hash-set! h1 (save 3/45) 'rational)
                      (hash-set! h1 (save 3+45i) 'complex)
                      (hash-set! h1 (save (integer->char 955)) 'char)
-                     (hash-set! h1 (save fl) 'flvector))]
+                     (hash-set! h1 (save fl) 'flvector)
+                     (hash-set! h1 (save fx) 'fxvector))]
             [puts2 (lambda ()
                      (hash-set! h1 (save (list 5 7)) 'another-list)
                      (hash-set! h1 (save 3+0.0i) 'izi-complex)
@@ -2415,7 +2442,7 @@
             (puts1))
           (begin
             (puts1)
-            (test 8 hash-count h1)
+            (test 9 hash-count h1)
             (puts2))))
 
       (when reorder?
@@ -2427,7 +2454,7 @@
             (loop (add1 i))
             (hash-remove! h1 i))))
 
-      (test 15 hash-count h1)
+      (test 16 hash-count h1)
       (test 'list hash-ref h1 l)
       (test 'list hash-ref h1 (list 1 2 3))
       (test 'another-list hash-ref h1 (list 5 7))
@@ -2447,6 +2474,7 @@
       (test 'box hash-ref h1 #&(1 2 3))
       (test 'char hash-ref h1 (integer->char 955))
       (test 'flvector hash-ref h1 (flvector 1.0 +nan.0 0.0))
+      (test 'fxvector hash-ref h1 (fxvector 1 -2 0))
       (test 'cyclic-list hash-ref h1 cyclic-list)
       (test #t
             andmap
@@ -2467,14 +2495,15 @@
               (#\u3BB . char)
               (#&(1 2 3) . box)
               (,(flvector 1.0 +nan.0 0.0) . flvector)
+              (,(fxvector 1 -2 0) . fxvector)
               (,cyclic-list . cyclic-list)))
 
       (hash-remove! h1 (list 1 2 3))
-      (test 14 hash-count h1)
+      (test 15 hash-count h1)
       (test 'not-there hash-ref h1 l (lambda () 'not-there))
       (let ([c 0])
         (hash-for-each h1 (lambda (k v) (set! c (add1 c))))
-        (test 14 'count c))
+        (test 15 'count c))
       ;; return the hash table:
       h1))
 
@@ -3027,7 +3056,10 @@
 (test (system-type) system-type 'os)
 (test #t string? (system-type 'machine))
 (test #t symbol? (system-type 'link))
+(test #t symbol? (system-type 'os*))
+(test #t symbol? (system-type 'arch))
 (test #t relative-path? (system-library-subpath))
+(test #t relative-path? (system-library-subpath #f))
 
 (test #t pair? (memv (system-type 'word) '(32 64)))
 (test (fixnum? (expt 2 32)) = (system-type 'word) 64)

@@ -16,6 +16,10 @@
 (err/rt-test (thread (lambda (x) 8)) type?)
 (arity-test thread? 1 1)
 
+(test #f struct-predicate-procedure? thread?)
+(test #f struct-predicate-procedure? evt?)
+(test #f struct-type-property-predicate-procedure? evt?)
+
 ;; ----------------------------------------
 ;; Thread sets
 
@@ -1012,6 +1016,17 @@
      (goes (lambda () (sync (system-idle-evt))) (lambda () (sync (system-idle-evt))) break-thread)
      (goes (lambda () (sync (system-idle-evt))) (lambda () (sync (system-idle-evt))) kill-thread)))
  (list sleep void))
+
+;; Suspend and sleep
+(when (run-unreliable-tests? 'timing)
+  (let ([done? #f])
+    (define t (thread (lambda ()
+                        (sleep 0.1)
+                        (set! done? #t))))
+    (sync (system-idle-evt))
+    (thread-suspend t)
+    (sleep 0.1)
+    (test #f 'suspended-while-sleeping done?)))
 
 ;; ----------------------------------------
 ;;  Simple multi-custodian threads

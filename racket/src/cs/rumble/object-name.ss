@@ -55,7 +55,8 @@
    [(procedure? v)
     (extract-procedure-name v)]
    [(struct-type? v)
-    (record-type-name v)]
+    (and (not (eq? (inspector-ref v) none))
+         (record-type-name v))]
    [(struct-type-property? v)
     (struct-type-prop-name v)]
    [(record? v)
@@ -92,14 +93,14 @@
                (lambda ()
                  (cond
                   [(fx= 1 len) ""]
-                  [(char=? #\; (string-ref n 0))
+                  [(char=? #\! (string-ref n 1)) ; => method
                    (substring n 2 len)]
-                  [(char=? #\^ (string-ref n 0))
+                  [(char=? #\^ (string-ref n 1)) ; => not a method
                    (substring n 2 len)]
                   [else
                    (substring n 1 len)]))])
           (cond
-           [(char=? #\[ (string-ref n 0))
+           [(char=? #\[ (string-ref n 0)) ; => name is derived from a path
             (let ([n (strip-prefix)])
               ;; Empty means no name
               (if (eqv? "" n)

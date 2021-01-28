@@ -285,6 +285,13 @@ void scheme_clear_ephemerons(void);
 
 #define SCHEME_PAIR_COPY_FLAGS(dest, src) (SCHEME_PAIR_FLAGS((dest)) |= (SCHEME_PAIR_FLAGS((src)) & PAIR_FLAG_MASK))
 
+#ifdef MZ_USE_MAP_JIT
+XFORM_NONGCING void scheme_thread_code_start_write(void);
+XFORM_NONGCING void scheme_thread_code_end_write(void);
+#else
+# define scheme_thread_code_start_write() do { } while (0)
+# define scheme_thread_code_end_write()   do { } while (0)
+#endif
 
 /*========================================================================*/
 /*                             initialization                             */
@@ -500,6 +507,8 @@ int scheme_is_place_main_os_thread();
 Scheme_Object *scheme_get_startup_export(const char *s);
 
 extern int scheme_init_load_on_demand;
+
+extern int scheme_keep_builtin_context;
 
 /*========================================================================*/
 /*                                constants                               */
@@ -1087,7 +1096,8 @@ typedef struct Scheme_Struct_Type {
   mzshort num_islots; /* initialized + parent-initialized */
   mzshort name_pos;
   char authentic; /* 1 => chaperones/impersonators disallowed */
-  char nonfail_constructor; /* 1 => constructor never fails */
+  char more_flags; /* STRUCT_TYPE_FLAG_NONFAIL_CONSTRUCTOR => constructor never fails
+                      STRUCT_TYPE_FLAG_SYSTEM_OPAQUE => #f for `object-name`, for example */
 
   Scheme_Object *name;
 
@@ -1117,6 +1127,10 @@ typedef struct Scheme_Struct_Type {
 
 #define STRUCT_TYPE_ALL_IMMUTABLE 0x1
 #define STRUCT_TYPE_CHECKED_PROC  0x2
+
+/* for `more_flags` field */
+#define STRUCT_TYPE_FLAG_NONFAIL_CONSTRUCTOR 0x1
+#define STRUCT_TYPE_FLAG_SYSTEM_OPAQUE       0x2
 
 typedef struct Scheme_Structure
 {
@@ -2262,6 +2276,7 @@ typedef Scheme_Rational Small_Rational;
 
 XFORM_NONGCING Scheme_Object *scheme_make_small_rational(intptr_t n, Small_Rational *space);
 XFORM_NONGCING Scheme_Object *scheme_make_small_bn_rational(Scheme_Object *n, Small_Rational *space);
+Scheme_Object *scheme_make_rational_pre_normalized(const Scheme_Object *n, const Scheme_Object *d);
 Scheme_Object *scheme_integer_to_rational(const Scheme_Object *n);
 Scheme_Object *scheme_make_fixnum_rational(intptr_t n, intptr_t d);
 XFORM_NONGCING int scheme_rational_eq(const Scheme_Object *a, const Scheme_Object *b);
@@ -2708,10 +2723,15 @@ Scheme_Comp_Env *scheme_set_comp_env_name(Scheme_Comp_Env *env, Scheme_Object *n
 #define LAMBDA_NEED_REST_CLEAR 8
 #define LAMBDA_IS_METHOD 16
 #define LAMBDA_SINGLE_RESULT 32
-#define LAMBDA_RESULT_TENTATIVE 64
-#define LAMBDA_VALIDATED 128
+#define LAMBDA_STATUS_MASK (64 | 128)
 #define LAMBDA_SFS 256
 /* BITS 8-15 (overlaps LAMBDA_SFS) used by write_lambda() */
+
+/* These modes correspond to different times for a given `lambda`,
+   assuming that builtin functions are not validated: */
+#define LAMBDA_STATUS_RESULT_TENTATIVE   64
+#define LAMBDA_STATUS_VALIDATED         128
+#define LAMBDA_STATUS_BUILTIN           (128 | 64)
 
 #define COMP_ALLOW_SET_UNDEFINED  0x1
 #define COMP_CAN_INLINE           0x2

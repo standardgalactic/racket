@@ -118,6 +118,7 @@ static Scheme_Object *fx_xor (int argc, Scheme_Object *argv[]);
 static Scheme_Object *fx_not (int argc, Scheme_Object *argv[]);
 static Scheme_Object *fx_lshift (int argc, Scheme_Object *argv[]);
 static Scheme_Object *fx_rshift (int argc, Scheme_Object *argv[]);
+static Scheme_Object *fx_lshift_wrap (int argc, Scheme_Object *argv[]);
 static Scheme_Object *fx_to_fl (int argc, Scheme_Object *argv[]);
 static Scheme_Object *fl_to_fx (int argc, Scheme_Object *argv[]);
 
@@ -162,6 +163,7 @@ static Scheme_Object *unsafe_fx_xor (int argc, Scheme_Object *argv[]);
 static Scheme_Object *unsafe_fx_not (int argc, Scheme_Object *argv[]);
 static Scheme_Object *unsafe_fx_lshift (int argc, Scheme_Object *argv[]);
 static Scheme_Object *unsafe_fx_rshift (int argc, Scheme_Object *argv[]);
+static Scheme_Object *unsafe_fx_lshift_wrap (int argc, Scheme_Object *argv[]);
 static Scheme_Object *unsafe_fx_to_fl (int argc, Scheme_Object *argv[]);
 static Scheme_Object *unsafe_fl_to_fx (int argc, Scheme_Object *argv[]);
 static Scheme_Object *fl_ref (int argc, Scheme_Object *argv[]);
@@ -265,14 +267,14 @@ READ_ONLY Scheme_Object *scheme_zerol, *scheme_nzerol, *scheme_long_pi,
 XFORM_NONGCING static void to_double_prec(void)
 {
   int _dblprec = 0x27F;
-  asm ("fldcw %0" : : "m" (_dblprec));
+  __asm__ ("fldcw %0" : : "m" (_dblprec));
 }
 #endif
 #if defined(ASM_DBLPREC_CONTROL_87) || defined(ASM_EXTPREC_CONTROL_87)
 XFORM_NONGCING static void to_extended_prec(void)
 {
   int _extprec = 0x37F;
-  asm ("fldcw %0" : : "m" (_extprec));
+  __asm__ ("fldcw %0" : : "m" (_extprec));
 }
 #endif
 
@@ -894,6 +896,11 @@ void scheme_init_flfxnum_number(Scheme_Startup_Env *env)
                                                             | SCHEME_PRIM_PRODUCES_FIXNUM);
   scheme_addto_prim_instance("fxrshift", p, env);
 
+  p = scheme_make_folding_prim(fx_lshift_wrap, "fxlshift/wraparound", 2, 2, 1);
+  SCHEME_PRIM_PROC_FLAGS(p) |= scheme_intern_prim_opt_flags(SCHEME_PRIM_IS_BINARY_INLINED
+                                                            | SCHEME_PRIM_PRODUCES_FIXNUM);
+  scheme_addto_prim_instance("fxlshift/wraparound", p, env);
+
   p = scheme_make_folding_prim(fx_to_fl, "fx->fl", 1, 1, 1);
   if (scheme_can_inline_fp_op())
     flags = SCHEME_PRIM_IS_UNARY_INLINED;
@@ -1372,6 +1379,12 @@ void scheme_init_unsafe_number(Scheme_Startup_Env *env)
                                                             | SCHEME_PRIM_IS_UNSAFE_FUNCTIONAL
                                                             | SCHEME_PRIM_PRODUCES_FIXNUM);
   scheme_addto_prim_instance("unsafe-fxlshift", p, env);
+
+  p = scheme_make_folding_prim(unsafe_fx_lshift_wrap, "unsafe-fxlshift/wraparound", 2, 2, 1);
+  SCHEME_PRIM_PROC_FLAGS(p) |= scheme_intern_prim_opt_flags(SCHEME_PRIM_IS_BINARY_INLINED
+                                                            | SCHEME_PRIM_IS_UNSAFE_FUNCTIONAL
+                                                            | SCHEME_PRIM_PRODUCES_FIXNUM);
+  scheme_addto_prim_instance("unsafe-fxlshift/wraparound", p, env);
 
   p = scheme_make_folding_prim(unsafe_fx_rshift, "unsafe-fxrshift", 2, 2, 1);
   SCHEME_PRIM_PROC_FLAGS(p) |= scheme_intern_prim_opt_flags(SCHEME_PRIM_IS_BINARY_INLINED
@@ -2350,7 +2363,7 @@ scheme_bin_gcd (const Scheme_Object *n1, const Scheme_Object *n2)
       a = b;
       b = r;
     }
-    return (scheme_make_integer(a));
+    return (scheme_make_integer_value(a));
   } else if (!scheme_is_integer(n1) || !scheme_is_integer(n2)) {
     Scheme_Object *n1a, *n2a, *a[1], *num;
 
@@ -3714,41 +3727,38 @@ scheme_expt(int argc, Scheme_Object *argv[])
           }
 	}
       }
-    } else if (SCHEME_BIGNUMP(e) && SCHEME_BIGPOS(e)) {
-      /* If `e` is a positive bignum, then the result should be zero,
-         but we won't get that result if conversion produces infinity */
-      double e_dbl;
+    }
+
+    if (SCHEME_FLOATP(n) && (SCHEME_INTP(e) || SCHEME_BIGNUMP(e))) {
+      /* We want to preserve evenness and oddness of `e`, so don't
+         necessarily convert directly to a flonum */
+      mzlonglong v;
+      if (!scheme_get_long_long_val(e, &v)
+          || (v < -((mzlonglong)1 << 53))
+          || (v > ((mzlonglong)1 << 53))) {
+        /* `e` loses precision as a flonum */
 #ifdef MZ_USE_SINGLE_FLOATS
-      int sgl = !SCHEME_DBLP(n);
+        int sgl = !SCHEME_DBLP(n);
 #endif
-      if ((d < 0.0) && (d > -1.0)) {
-        if (SCHEME_FALSEP(scheme_odd_p(1, &e)))
-          return SELECT_EXPT_PRECISION(scheme_zerof, scheme_zerod);
-        else
-          return SELECT_EXPT_PRECISION(scheme_nzerof, scheme_nzerod);
-      }
-      /* If d is negative, and `e` is a large enough bignum which would
-         be converted to infinity, this would return a complex NaN.
-         Instead, we want to return (positive of negative) infinity.
-         See discussion in Github issue 1148. */
-#ifdef MZ_USE_SINGLE_FLOATS
-      if (sgl) {
-        /* Need to go through singles to get right overflow behavior. */
-        e_dbl = (double)(scheme_bignum_to_float(e));
-      } else {
-        e_dbl = scheme_bignum_to_double(e);
-      }
-#else
-      e_dbl = scheme_bignum_to_double(e);
-#endif
-      if ((d < 0.0) && MZ_IS_POS_INFINITY(e_dbl)) {
-        if (SCHEME_TRUEP(scheme_odd_p(1, &e))) {
-          return SELECT_EXPT_PRECISION(scheme_single_minus_inf_object,
-                                       scheme_minus_inf_object);
-        } else {
-          return SELECT_EXPT_PRECISION(scheme_single_inf_object,
-                                       scheme_inf_object);
+        double d = SCHEME_FLOAT_VAL(n), a = 1.0;
+        intptr_t i;
+        int invert = 0;
+        if (scheme_is_negative(e)) {
+          invert = 1;
+          e = scheme_bin_minus(scheme_make_integer(0), e);
         }
+        i = scheme_integer_length(e);
+        while (i >= 0) {
+          a = a * a;
+          if (scheme_bin_bitwise_bit_set_p(e, scheme_make_integer(i)))
+            a *= d;
+          i--;
+        }
+        if (invert) a = 1.0 / a;
+#ifdef MZ_USE_SINGLE_FLOATS
+        if (sgl) return scheme_make_float(a);
+#endif
+        return scheme_make_double(a);
       }
     }
 
@@ -5263,6 +5273,11 @@ static Scheme_Object *neg_bitwise_shift(int argc, Scheme_Object *argv[])
   return scheme_bitwise_shift(argc, a);
 }
 
+static Scheme_Object *wrap_bitwise_shift(int argc, Scheme_Object *argv[])
+{
+  return scheme_make_integer((intptr_t)((uintptr_t)SCHEME_INT_VAL(argv[0]) << SCHEME_INT_VAL(argv[1])));
+}
+
 #define SAFE_FX(name, s_name, scheme_op, sec_p, sec_t, no_args) \
  static Scheme_Object *name(int argc, Scheme_Object *argv[]) \
  {                                                           \
@@ -5295,6 +5310,7 @@ SAFE_FX(fx_xor, "fxxor", bitwise_xor, SCHEME_INTP, "fixnum?", scheme_make_intege
 
 SAFE_FX(fx_lshift, "fxlshift", scheme_bitwise_shift, FIXNUM_WIDTH_P, FIXNUM_WIDTH_TYPE, scheme_false)
 SAFE_FX(fx_rshift, "fxrshift", neg_bitwise_shift, FIXNUM_WIDTH_P, FIXNUM_WIDTH_TYPE, scheme_false)
+SAFE_FX(fx_lshift_wrap, "fxlshift/wraparound", wrap_bitwise_shift, FIXNUM_WIDTH_P, FIXNUM_WIDTH_TYPE, scheme_false)
 
 static Scheme_Object *fx_not (int argc, Scheme_Object *argv[])
 {
@@ -5504,6 +5520,7 @@ UNSAFE_FX(unsafe_fx_or, |, bitwise_or, intptr_t, scheme_make_integer(0))
 UNSAFE_FX(unsafe_fx_xor, ^, bitwise_xor, intptr_t, scheme_make_integer(0))
 UNSAFE_FX(unsafe_fx_lshift, <<, fold_fixnum_bitwise_shift, uintptr_t, scheme_false)
 UNSAFE_FX(unsafe_fx_rshift, >>, neg_bitwise_shift, intptr_t, scheme_false)
+UNSAFE_FX(unsafe_fx_lshift_wrap, <<, fold_fixnum_bitwise_shift, uintptr_t, scheme_false)
 
 static Scheme_Object *unsafe_fx_not (int argc, Scheme_Object *argv[])
 {

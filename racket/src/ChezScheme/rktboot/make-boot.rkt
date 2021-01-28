@@ -96,14 +96,23 @@
                expand
                compile
                error
-               format))))
+               format
+               make-variable-transformer))))
 
 (reset-toplevels)
+
+(define (load-if-exists/cd path)
+  (when (file-exists? path)
+    (load/cd path)))
 
 (status "Load nanopass")
 (define (load-nanopass)
   (load/cd (build-path nano-dir "nanopass/helpers.ss"))
   (load/cd (build-path nano-dir "nanopass/syntaxconvert.ss"))
+  (load-if-exists/cd (build-path nano-dir "nanopass/records.ss"))
+  (load-if-exists/cd (build-path nano-dir "nanopass/nano-syntax-dispatch.ss"))
+  (load-if-exists/cd (build-path nano-dir "nanopass/parser.ss"))
+  (load-if-exists/cd (build-path nano-dir "nanopass/unparser.ss"))
   (load/cd (build-path nano-dir "nanopass/records.ss"))
   (load/cd (build-path nano-dir "nanopass/meta-syntax-dispatch.ss"))
   (load/cd (build-path nano-dir "nanopass/meta-parser.ss"))
@@ -117,6 +126,7 @@
   (load/cd (build-path nano-dir "nanopass.ss")))
 (parameterize ([current-namespace ns]
                [current-readtable r6rs-readtable])
+  (load-if-exists/cd (build-path nano-dir "nanopass/syntactic-property.sls"))
   (load/cd (build-path nano-dir "nanopass/implementation-helpers.ikarus.ss"))
   (load-nanopass))
 
@@ -392,15 +402,16 @@
       (status "Generate GC")
       (eval `(mkgc-ocd.inc ,(path->string (build-path out-subdir "gc-ocd.inc"))))
       (eval `(mkgc-oce.inc ,(path->string (build-path out-subdir "gc-oce.inc"))))
-      (eval `(mkvfasl.inc ,(path->string (build-path out-subdir "vfasl.inc"))))
+      (eval `(mkgc-par.inc ,(path->string (build-path out-subdir "gc-par.inc"))))
+      (eval `(mkheapcheck.inc ,(path->string (build-path out-subdir "heapcheck.inc"))))
       (plumber-flush-all (current-plumber))))
 
   (when (getenv "MAKE_BOOT_FOR_CROSS")
     ;; Working bootfiles are not needed for a cross build (only the
-    ;; ".h" files are needed), so just make dummy files in that case
-    ;; to let `configure` work
+    ;; ".h" files are needed), so just touch dummy files in that case
+    ;; to let `configure` work and to communicate xpatch rebuild
     (define (touch p)
-      (unless (file-exists? p) (call-with-output-file* p void)))
+      (call-with-output-file* p void #:exists 'truncate))
     (touch (build-path out-subdir "petite.boot"))
     (touch (build-path out-subdir "scheme.boot"))
     (exit))

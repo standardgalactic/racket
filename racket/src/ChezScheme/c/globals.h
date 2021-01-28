@@ -39,10 +39,18 @@ EXTERN s_thread_key_t S_tc_key;
 EXTERN scheme_mutex_t S_tc_mutex;
 EXTERN s_thread_cond_t S_collect_cond;
 EXTERN s_thread_cond_t S_collect_thread0_cond;
-EXTERN INT S_tc_mutex_depth;
+EXTERN scheme_mutex_t S_alloc_mutex; /* ordered after S_tc_mutex */
+EXTERN s_thread_cond_t S_terminated_cond;
+EXTERN int S_collect_waiting_threads;
+EXTERN ptr S_collect_waiting_tcs[maximum_parallel_collect_threads];
+EXTERN int S_num_preserve_ownership_threads;
+# ifdef IMPLICIT_ATOMIC_AS_EXPLICIT
+EXTERN s_thread_mutex_t S_implicit_mutex;
+# endif
 #endif
 
 /* segment.c */
+/* update of the segment table is protected by alloc mutex */
 #ifdef segment_t2_bits
 #ifdef segment_t3_bits
 EXTERN t2table *S_segment_info[1<<segment_t3_bits];
@@ -55,9 +63,10 @@ EXTERN seginfo *S_segment_info[1<<segment_t1_bits];
 
 EXTERN chunkinfo *S_chunks_full;
 EXTERN chunkinfo *S_chunks[PARTIAL_CHUNK_POOLS+1];
+EXTERN chunkinfo *S_code_chunks_full;
+EXTERN chunkinfo *S_code_chunks[PARTIAL_CHUNK_POOLS+1];
 
 /* schsig.c */
-EXTERN IBOOL S_pants_down;
 
 /* foreign.c */
 #ifdef LOAD_SHARED_OBJECT
@@ -68,6 +77,7 @@ EXTERN ptr S_foreign_dynamic;
 EXTERN struct S_G_struct {
   /* scheme.c */
     double thread_context[size_tc / sizeof(double)];
+    thread_gc main_thread_gc;
     ptr active_threads_id;
     ptr error_invoke_code_object;
     ptr invoke_code_object;
@@ -89,28 +99,28 @@ EXTERN struct S_G_struct {
     ptr threadno;
 
   /* segment.c */
-    seginfo *occupied_segments[max_real_space+1][static_generation+1];
+    seginfo *occupied_segments[static_generation+1][max_real_space+1];
     uptr number_of_nonstatic_segments;
     uptr number_of_empty_segments;
 
   /* alloc.c */
     ptr *protected[max_protected];
     uptr protect_next;
-    ptr first_loc[max_real_space+1][static_generation+1];
-    ptr base_loc[max_real_space+1][static_generation+1];
-    ptr next_loc[max_real_space+1][static_generation+1];
-    iptr bytes_left[max_real_space+1][static_generation+1];
-    uptr bytes_of_space[max_real_space+1][static_generation+1];
+    uptr bytes_of_space[static_generation+1][max_real_space+1]; /* protected by alloc mutex */
+    uptr bytes_of_generation[static_generation+1]; /* protected by alloc mutex */
+    uptr bitmask_overhead[static_generation+1];
+    uptr g0_bytes_after_last_gc;
     uptr collect_trip_bytes;
     ptr nonprocedure_code;
     ptr null_string;
     ptr null_vector;
     ptr null_fxvector;
+    ptr null_flvector;
     ptr null_bytevector;
     ptr null_immutable_string;
     ptr null_immutable_vector;
-    ptr null_immutable_fxvector;
     ptr null_immutable_bytevector;
+    ptr zero_length_bignum;
     seginfo *dirty_segments[DIRTY_SEGMENT_LISTS];
 
   /* schsig.c */
@@ -140,6 +150,8 @@ EXTERN struct S_G_struct {
     ptr gcbackreference[static_generation+1];
     IGEN prcgeneration;
     uptr bytes_finalized;
+    dirtycardinfo *new_dirty_cards;
+    IBOOL must_mark_gen0;
 
   /* intern.c */
     iptr oblist_length;

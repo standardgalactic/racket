@@ -90,6 +90,24 @@
 		    x
 		    x)))))
 
+;; Check that #f is allowed in place of marks:
+(begin
+  (test '(10)
+        values
+        (with-continuation-mark 'key3 10 (continuation-mark-set->list #f 'key3)))
+  (test '(#(10))
+        values
+        (with-continuation-mark 'key3 10 (continuation-mark-set->list* #f '(key3))))
+  (test '#(10)
+        values
+        (let-values ([(v proc) ((with-continuation-mark 'key3 10 (continuation-mark-set->iterator #f '(key3))))])
+          v))
+
+  ;; Prompt tag must be present:
+  (err/rt-test (continuation-mark-set->list #f 'key3 'none (make-continuation-prompt-tag)))
+  (err/rt-test (continuation-mark-set->list* #f '(key3) 'none (make-continuation-prompt-tag)))
+  (err/rt-test (continuation-mark-set->iterator #f '(key3) 'none (make-continuation-prompt-tag))))
+
 (wcm-test '(11) (lambda ()
 		  (with-continuation-mark 'key 10 
 		    (with-continuation-mark 'key 11
@@ -1101,6 +1119,20 @@
         (with-continuation-mark
          'y 1
          (f))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check result of `continuation-mark-set->context`
+;; --- at least that it has the right kinds of elements
+
+(let ([go (lambda () ('no-a-function))])
+  (set! go (if (positive? (random 1)) #f go))
+  (define exn (with-handlers ([exn? values]) (go)))
+  (test #t andmap
+        (lambda (p)
+          (and p
+               (or (not (car p)) (symbol? (car p)))
+               (or (not (cdr p)) (srcloc? (cdr p)))))
+        (continuation-mark-set->context (exn-continuation-marks exn))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

@@ -76,28 +76,29 @@ typedef int IFASLCODE;      /* fasl type codes */
 
 #define ALREADY_PTR(p) (p)
 
-/* inline allocation --- mutex required */
+/* inline allocation --- no mutex required */
 /* find room allocates n bytes in space s and generation g into
  * destination x, tagged with ty, punting to find_more_room if
  * no space is left in the current segment.  n is assumed to be
  * an integral multiple of the object alignment. */
-#define find_room_T(s, g, t, n, T, x) {          \
-    ptr X = S_G.next_loc[s][g];\
-    S_G.next_loc[s][g] = (ptr)((uptr)X + (n));\
-    if ((S_G.bytes_left[s][g] -= (n)) < 0) X = S_find_more_room(s, g, n, X);\
-    (x) = T(TYPE(X, t));                                                \
-}
+#define find_gc_room_T(tgc, s, g, t, n, T, x) do {         \
+    thread_gc *TGC = tgc;                                  \
+    iptr N_BYTES = n;                                      \
+    ptr X = TGC->next_loc[g][s];                           \
+    TGC->next_loc[g][s] = (ptr)((uptr)X + N_BYTES);        \
+    if ((TGC->bytes_left[g][s] -= (n)) < 0) X = S_find_more_gc_room(tgc, s, g, N_BYTES, X); \
+    (x) = T(TYPE(X, t));                                   \
+  } while(0)
 
-#define find_room(s, g, t, n, x) find_room_T(s, g, t, n, ALREADY_PTR, x)
-#define find_room_voidp(s, g, n, x) find_room_T(s, g, typemod, n, TO_VOIDP, x)
+#define find_room(tc, s, g, t, n, x) find_gc_room_T(THREAD_GC(tc), s, g, t, n, ALREADY_PTR, x)
+#define find_gc_room(tgc, s, g, t, n, x) find_gc_room_T(tgc, s, g, t, n, ALREADY_PTR, x)
+#define find_room_voidp(tc, s, g, n, x) find_gc_room_T(THREAD_GC(tc), s, g, typemod, n, TO_VOIDP, x)
+#define find_gc_room_voidp(tgc, s, g, n, x) find_gc_room_T(tgc, s, g, typemod, n, TO_VOIDP, x)
 
-/* thread-local inline allocation --- no mutex required */
-/* thread_find_room allocates n bytes in the local allocation area of
- * the thread (hence space new, generation zero) into destination x, tagged
- * with type t, punting to find_more_room if no space is left in the current
- * allocation area.  n is assumed to be an integral multiple of the object
- * alignment. */
-#define thread_find_room_T(tc, t, n, T, x) {     \
+/* new-space inline allocation --- no mutex required */
+/* Like `find_room`, but always `space_new` and generation 0,
+   so using the same bump pointer as most new allocation */
+#define newspace_find_room_T(tc, t, n, T, x) do {     \
   ptr _tc = tc;\
   uptr _ap = (uptr)AP(_tc);\
   if ((uptr)n > ((uptr)EAP(_tc) - _ap)) {\
@@ -107,10 +108,10 @@ typedef int IFASLCODE;      /* fasl type codes */
     (x) = T(TYPE(_ap,t));                       \
     AP(_tc) = (ptr)(_ap + n);\
   }\
-}
+ } while(0)
 
-#define thread_find_room(tc, t, n, x) thread_find_room_T(tc, t, n, ALREADY_PTR, x)
-#define thread_find_room_voidp(tc, n, x) thread_find_room_T(tc, typemod, n, TO_VOIDP, x)
+#define newspace_find_room(tc, t, n, x) newspace_find_room_T(tc, t, n, ALREADY_PTR, x)
+#define newspace_find_room_voidp(tc, n, x) newspace_find_room_T(tc, typemod, n, TO_VOIDP, x)
 
 #ifndef NO_PRESERVE_FLONUM_EQ
 # define PRESERVE_FLONUM_EQ
@@ -150,8 +151,16 @@ typedef struct _seginfo {
   octet min_dirty_byte;                     /* dirty byte for full segment, effectively min(dirty_bytes) */
   octet *list_bits;                         /* for `$list-bits-ref` and `$list-bits-set!` */
   uptr number;                              /* the segment number */
+#ifdef PTHREADS
+  struct thread_gc *creator;                /* for GC parallelism; might not have an active thread, unless old_space */
+#endif
   struct _chunkinfo *chunk;                 /* the chunk this segment belongs to */
-  struct _seginfo *next;                    /* pointer to the next seginfo (used in occupied_segments and unused_segs */
+  struct _seginfo *next;                    /* pointer to the next seginfo (used in occupied_segments and unused_segs) */
+  struct _seginfo *sweep_next;              /* next in list of segments allocated during GC => need to sweep */
+  ptr sweep_start;                          /* address within segment to start sweep */
+#if defined(WRITE_XOR_EXECUTE_CODE)
+  iptr sweep_bytes;                         /* total number of bytes starting at sweep_start */
+#endif
   struct _seginfo **dirty_prev;             /* pointer to the next pointer on the previous seginfo in the DirtySegments list */
   struct _seginfo *dirty_next;              /* pointer to the next seginfo on the DirtySegments list */
   ptr trigger_ephemerons;                   /* ephemerons to re-check if object in segment is copied out */
@@ -164,6 +173,9 @@ typedef struct _seginfo {
   octet *counting_mask;                     /* bitmap of counting roots during a GC */
   octet *measured_mask;                     /* bitmap of objects that have been measured */
 #ifdef PORTABLE_BYTECODE
+# ifndef PTHREADS
+  void *encorage_alignment;                 /* hack for 32-bit systems that align 64-bit values on 4 bytes */
+# endif
   union { ptr force_alignment;    
 #endif
   octet dirty_bytes[cards_per_segment];     /* one dirty byte per card */
@@ -177,7 +189,7 @@ typedef struct _chunkinfo {
   iptr base;                                /* first segment */
   iptr bytes;                               /* size in bytes */
   iptr segs;                                /* size in segments */
-  iptr nused_segs;                          /* number of segments currently in used use */ 
+  iptr nused_segs;                          /* number of segments currently in use */
   struct _chunkinfo **prev;                 /* pointer to previous chunk's next */
   struct _chunkinfo *next;                  /* next chunk */
   struct _seginfo *unused_segs;             /* list of unused segments */
@@ -235,7 +247,8 @@ typedef struct _t2table {
 #define DIRTY_SEGMENT_INDEX(from_g, to_g) ((((unsigned)((from_g)*((from_g)-1)))>>1)+to_g)
 #define DIRTY_SEGMENT_LISTS DIRTY_SEGMENT_INDEX(static_generation, static_generation)
 
-#define DirtySegments(from_g, to_g) S_G.dirty_segments[DIRTY_SEGMENT_INDEX(from_g, to_g)]
+#define DirtySegmentsAt(dirty_segments, from_g, to_g) dirty_segments[DIRTY_SEGMENT_INDEX(from_g, to_g)]
+#define DirtySegments(from_g, to_g) DirtySegmentsAt(S_G.dirty_segments, from_g, to_g) 
 
 /* oblist */
 
@@ -261,12 +274,15 @@ typedef struct _bucket_pointer_list {
 #define size_closure(n) ptr_align(header_size_closure + (n)*ptr_bytes)
 #define size_string(n) ptr_align(header_size_string + (n)*string_char_bytes)
 #define size_fxvector(n) ptr_align(header_size_fxvector + (n)*ptr_bytes)
+#define size_flvector(n) ptr_align(header_size_flvector + (n)*sizeof(double))
 #define size_bytevector(n) ptr_align(header_size_bytevector + (n))
 #define size_bignum(n) ptr_align(header_size_bignum + (n)*bigit_bytes)
 #define size_code(n) ptr_align(header_size_code + (n))
 #define size_reloc_table(n) ptr_align(header_size_reloc_table + (n)*ptr_bytes)
 #define size_record_inst(n) ptr_align(n)
 #define unaligned_size_record_inst(n) (n)
+
+#define rtd_parent(x) INITVECTIT(RECORDDESCANCESTRY(x), 0)
 
 /* type tagging macros */
 
@@ -297,6 +313,12 @@ typedef struct _bucket_pointer_list {
 */
 
 #define DIRTYSET(lhs,rhs) S_dirty_set(lhs, rhs);
+
+typedef struct _dirtycardinfo {
+  uptr card;
+  IGEN youngest;
+  struct _dirtycardinfo *next;
+} dirtycardinfo;
 
 /* derived accessors/constructors */
 #define FWDMARKER(p) FORWARDMARKER((uptr)UNTYPE_ANY(p))
@@ -351,7 +373,7 @@ typedef struct {
 #define deactivate_thread_signal_collect(tc, check_collect) {  \
   if (ACTIVE(tc)) {\
     ptr code;\
-    tc_mutex_acquire()\
+    tc_mutex_acquire();\
     code = CP(tc);\
     if (Sprocedurep(code)) CP(tc) = code = CLOSCODE(code);\
     Slock_object(code);\
@@ -370,7 +392,7 @@ typedef struct {
 #define deactivate_thread(tc) deactivate_thread_signal_collect(tc, 1) 
 #define reactivate_thread(tc) {\
   if (!ACTIVE(tc)) {\
-    tc_mutex_acquire()\
+    tc_mutex_acquire();                         \
     SETSYMVAL(S_G.active_threads_id,\
      FIX(UNFIX(SYMVAL(S_G.active_threads_id)) + 1));\
     Sunlock_object(CP(tc));\
@@ -378,25 +400,123 @@ typedef struct {
     tc_mutex_release()\
   }\
 }
-/* S_tc_mutex_depth records the number of nested mutex acquires in
-   C code on tc_mutex.  it is used by do_error to release tc_mutex
-   the appropriate number of times.
-*/
-#define tc_mutex_acquire() {\
-  S_mutex_acquire(&S_tc_mutex);\
-  S_tc_mutex_depth += 1;\
-}
-#define tc_mutex_release() {\
-  S_tc_mutex_depth -= 1;\
-  S_mutex_release(&S_tc_mutex);\
-}
+
+#define tc_mutex_acquire() do {                 \
+    assert_no_alloc_mutex();                    \
+    S_mutex_acquire(&S_tc_mutex);               \
+  } while (0);
+#define tc_mutex_release() do {                 \
+    S_mutex_release(&S_tc_mutex);               \
+  } while (0);
+
+/* Allocation mutex is ordered after tc mutex */
+#define alloc_mutex_acquire() do {              \
+    S_mutex_acquire(&S_alloc_mutex);            \
+  } while (0);
+#define alloc_mutex_release() do {              \
+    S_mutex_release(&S_alloc_mutex);            \
+  } while (0);
+
+/* To enable checking lock order: */
+#if 0
+# define assert_no_alloc_mutex() do {                                   \
+    if (S_mutex_is_owner(&S_alloc_mutex))                               \
+      S_error_abort("cannot take tc mutex after allocation mutex");     \
+  } while (0)
+#else
+# define assert_no_alloc_mutex() do { } while (0)
+#endif
+
+#define IS_TC_MUTEX_OWNER() S_mutex_is_owner(&S_tc_mutex)
+#define IS_ALLOC_MUTEX_OWNER() S_mutex_is_owner(&S_alloc_mutex)
+
+/* Enable in "version.h": */
+#ifdef IMPLICIT_ATOMIC_AS_EXPLICIT
+# define AS_IMPLICIT_ATOMIC(T, X) ({       \
+      T RESLT;                             \
+      s_thread_mutex_lock(&S_implicit_mutex);   \
+      RESLT = X;                           \
+      s_thread_mutex_unlock(&S_implicit_mutex); \
+      RESLT;                               \
+  })
+# define BEGIN_IMPLICIT_ATOMIC() s_thread_mutex_lock(&S_implicit_mutex)
+# define END_IMPLICIT_ATOMIC() s_thread_mutex_unlock(&S_implicit_mutex)
+#else
+# define AS_IMPLICIT_ATOMIC(T, X) X
+# define BEGIN_IMPLICIT_ATOMIC() do {  } while (0)
+# define END_IMPLICIT_ATOMIC() do {  } while (0)
+#endif
+
+#define S_cas_load_acquire_voidp(a, old, new) CAS_LOAD_ACQUIRE(a, old, new)
+#define S_cas_store_release_voidp(a, old, new) CAS_STORE_RELEASE(a, old, new)
+#define S_cas_load_acquire_ptr(a, old, new) CAS_LOAD_ACQUIRE(a, TO_VOIDP(old), TO_VOIDP(new))
+#define S_cas_store_release_ptr(a, old, new) CAS_STORE_RELEASE(a, TO_VOIDP(old), TO_VOIDP(new))
+#define S_store_release() RELEASE_FENCE()
+
 #else
 #define get_thread_context() TO_PTR(S_G.thread_context)
 #define deactivate_thread(tc) {}
 #define reactivate_thread(tc) {}
-#define tc_mutex_acquire() {}
-#define tc_mutex_release() {}
+#define tc_mutex_acquire() do {} while (0)
+#define tc_mutex_release() do {} while (0)
+#define alloc_mutex_acquire() do {} while (0)
+#define alloc_mutex_release() do {} while (0)
+#define IS_TC_MUTEX_OWNER() 1
+#define IS_ALLOC_MUTEX_OWNER() 1
+#define S_cas_load_acquire_voidp(a, old, new) (*(a) = new, 1)
+#define S_cas_store_release_voidp(a, old, new) (*(a) = new, 1)
+#define S_cas_load_acquire_ptr(a, old, new) (*(a) = new, 1)
+#define S_cas_store_release_ptr(a, old, new) (*(a) = new, 1)
+#define S_store_release() do { } while (0)
+#define BEGIN_IMPLICIT_ATOMIC() do {  } while (0)
+#define END_IMPLICIT_ATOMIC() do {  } while (0)
+#define AS_IMPLICIT_ATOMIC(T, X) X
 #endif
+
+typedef struct thread_gc {
+  ptr tc;
+
+  int during_alloc;
+  IBOOL queued_fire;
+  IBOOL preserve_ownership;
+
+  struct thread_gc *next;
+
+  ptr base_loc[static_generation+1][max_real_space+1];
+  ptr next_loc[static_generation+1][max_real_space+1];
+  iptr bytes_left[static_generation+1][max_real_space+1];
+  ptr orig_next_loc[max_real_space+1];
+  ptr sweep_loc[static_generation+1][max_real_space+1];
+  seginfo *sweep_next[static_generation+1][max_real_space+1];
+
+  ptr pending_ephemerons;
+
+  ptr sweep_stack;
+  ptr sweep_stack_start;
+  ptr sweep_stack_limit;
+
+  int sweep_change;
+  
+  int sweeper; /* parallel GC: sweeper thread identity */
+
+  /* modified only by owning sweeper; contains ptr and thread_gc* */
+  ptr send_remote_sweep_stack;
+  ptr send_remote_sweep_stack_start;
+  ptr send_remote_sweep_stack_limit;
+
+  /* modified with sweeper mutex held; contains just ptr */
+  ptr receive_remote_sweep_stack;
+  ptr receive_remote_sweep_stack_start;
+  ptr receive_remote_sweep_stack_limit;
+
+  seginfo *dirty_segments[DIRTY_SEGMENT_LISTS];
+
+  iptr bitmask_overhead[static_generation+1];
+} thread_gc;
+
+#define THREAD_GC(tc) ((thread_gc *)TO_VOIDP(GCDATA(tc)))
+
+#define main_sweeper_index maximum_parallel_collect_threads
 
 #ifdef __MINGW32__
 /* With MinGW on 64-bit Windows, setjmp/longjmp is not reliable. Using

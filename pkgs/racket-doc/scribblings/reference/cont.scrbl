@@ -94,12 +94,17 @@ handler, which accepts a single thunk to apply (with the prompt
 intact).}
 
 @defproc*[([(make-continuation-prompt-tag) continuation-prompt-tag?]
-           [(make-continuation-prompt-tag [sym symbol?]) continuation-prompt-tag?])]{
+           [(make-continuation-prompt-tag [name symbol?]) continuation-prompt-tag?])]{
 
 Creates a prompt tag that is not @racket[equal?] to the result of any
 other value (including prior or future results from
-@racket[make-continuation-prompt-tag]). The optional @racket[sym]
-argument, if supplied, is used when printing the prompt tag.}
+@racket[make-continuation-prompt-tag]). The optional @racket[name]
+argument, if supplied, specifies the name of the prompt tag
+for printing or @racket[object-name].
+
+@history[#:changed "7.9.0.13" @elem{The @racket[name] argument
+          gives the name of the prompt tag.}]
+}
 
 @defproc[(default-continuation-prompt-tag) continuation-prompt-tag?]{
 
@@ -182,15 +187,15 @@ called in tail position, and the continuation procedure supplied to
 @racket[proc] can only be called during the dynamic extent of the
 @racket[call-with-escape-continuation] call.
 
-Due to the limited applicability of its continuation,
-@racket[call-with-escape-continuation] can be implemented more efficiently
-than @racket[call-with-current-continuation].
-
 A continuation obtained from @racket[call-with-escape-continuation] is
 actually a kind of prompt. Escape continuations are provided mainly
 for backwards compatibility, since they pre-date general prompts in
-Racket, and because @racket[call/ec] is often an easy replacement
-for @racket[call/cc] to improve performance.}
+Racket. In the 3m and CGC variants of Racket,
+@racket[call-with-escape-continuation] is implemented more efficiently
+than @racket[call-with-current-continuation], so
+@racket[call-with-escape-continuation] can sometimes replace
+@racket[call-with-current-continuation] to improve performance in
+those older Racket variants.}
 
 @defproc[(call/ec
           [proc (continuation? . -> . any)]) 

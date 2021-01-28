@@ -13,13 +13,13 @@
 (define scheme-dir (build-path 'up "ChezScheme"))
 (define pull? #f)
 (define static-libs? #t)
+(define install-boot? #t) ; currently always enabled
 (define machine (if (= 32 (system-type 'word))
 		    "ti3nt"
 		    "ta6nt"))
 (define cs-suffix "")
 (define boot-mode "--chain")
 (define extra-repos-base #f)
-(define git-clone-args '())
 
 (command-line
  #:once-each
@@ -34,11 +34,11 @@
  [("--extra-repos-base") url "Clone repos from <url>ChezScheme/.git, etc."
                          (unless (equal? url "")
                            (set! extra-repos-base url))]
- [("--disable-libs") "Disable installaton of non-embedded boot files"
+ [("--disable-libs") "Disable installaton of static libraries (currently ignored)"
                      (set! static-libs? #f)]
  #:args
- clone-arg
- (set! git-clone-args clone-arg))
+ ()
+ (void))
 
 (current-directory here)
 
@@ -128,10 +128,13 @@
 ;; ----------------------------------------
 
 (define scheme (build-path scheme-dir machine "bin" machine "scheme.exe"))
-(define rel-scheme (build-path 'up "worksp"
-			       (if (relative-path? scheme)
-				   scheme
-				   (find-relative-path (current-directory) scheme))))
+(define scheme-boot (build-path scheme-dir machine "boot" machine))
+(define (path->relative p)
+  (if (relative-path? p)
+      p
+      (find-relative-path (current-directory) p)))
+(define rel-scheme (build-path 'up "worksp" (path->relative scheme)))
+(define rel-scheme-boot (build-path 'up "worksp" (path->relative scheme-boot)))
 
 (parameterize ([current-directory (build-path 'up "cs")])
   (define convert.d (build-path build-dir "compiled" "convert.d"))
@@ -142,7 +145,8 @@
 	    (format "SCHEME=~a" rel-scheme)
 	    (format "BUILDDIR=../build/") ; need forward slashes
 	    (format "CONVERT_RACKET=~a" chain-racket)
-            (format "BOOTSTRAPPED=~a" "done")))
+            (format "BOOTSTRAPPED=~a" "done")
+            (format "EXTRA_COMPILE_DEPS=~a/petite.boot ~a/scheme.boot" rel-scheme-boot rel-scheme-boot)))
 
 ;; ----------------------------------------
 
@@ -249,6 +253,7 @@
 (make-directory* "../../etc")
 (make-directory* "../../doc")
 (make-directory* "../../share")
+(make-directory* "../../include")
 
 (copy-file "../LICENSE-libscheme.txt"
            "../../share/LICENSE-libscheme.txt"
@@ -264,6 +269,16 @@
            #t)
 (copy-file "../LICENSE-GPL.txt"
            "../../share/LICENSE-GPL.txt"
+           #t)
+
+(copy-file "../cs/c/api.h"
+           "../../include/racketcs.h"
+           #t)
+(copy-file "../cs/c/boot.h"
+           "../../include/racketcsboot.h"
+           #t)
+(copy-file (build-path scheme-dir machine "boot" machine "scheme.h")
+           "../../include/chezscheme.h"
            #t)
 
 (parameterize ([current-directory "mzstart"])
@@ -282,9 +297,11 @@
           "../cs/c/gen-system.rkt"
           (format "../../lib/system~a.rktd" cs-suffix)
           machine
-          "machine")
+          "machine"
+          "../cs/c"
+          "")
 
-(when static-libs?
+(when install-boot?
   (bootstrap-racket! "../cs/c/add-terminator.rkt"
                      "../build/petite-v.boot"
                      "../../lib/petite.boot")

@@ -43,18 +43,21 @@ numbers produced by the reader in @racket[read-syntax] mode are
 @deftech{interned}, which means that such values in the result of
 @racket[read-syntax] are always @racket[eq?] when they are
 @racket[equal?] (whether from the same call or different calls to
-@racket[read-syntax]). Symbols and keywords are @tech{interned} in
-both @racket[read] and @racket[read-syntax] mode. Sending an
-@tech{interned} value across a @tech{place channel} does not
-necessarily produce an @tech{interned} value at the receiving
+@racket[read-syntax]). Symbols and keywords are interned in
+both @racket[read] and @racket[read-syntax] mode. When a quoted value
+is in compiled code that written and then read back in (see
+@secref["print-compiled"]), only strings and byte strings are
+interned when reading the code. Sending an
+interned value across a @tech{place channel} does not
+necessarily produce an interned value at the receiving
 @tech{place}. See also @racket[datum-intern-literal] and
 @racket[datum->syntax].
 
 @;------------------------------------------------------------------------
 @section[#:tag "default-readtable-dispatch"]{Delimiters and Dispatch}
 
-Along with @racketlink[char-whitespace?]{whitespace}, the following
-characters are @defterm{delimiters}:
+Along with @racketlink[char-whitespace?]{whitespace} and a BOM
+character, the following characters are @defterm{delimiters}:
 
 @t{
   @hspace[2] @ilitchar{(} @ilitchar{)} @ilitchar{[} @ilitchar{]}
@@ -86,8 +89,9 @@ characters play special roles:
 
 ]
 
-More precisely, after skipping whitespace, the reader dispatches based
-on the next character or characters in the input stream as follows:
+More precisely, after skipping whitespace and @racket[#\uFEFF] BOM
+characters, the reader dispatches based on the next character or
+characters in the input stream as follows:
 
 @dispatch-table[
 
@@ -188,6 +192,11 @@ on the next character or characters in the input stream as follows:
   @dispatch[@italic{otherwise}]{starts a @tech{symbol}; see @secref["parse-symbol"]}
 
 ]
+
+@history[#:changed "7.8.0.9" @elem{Changed treatment of the BOM
+                                   character so that it is treated
+                                   like whitespace in the same places
+                                   that comments are allowed.}]
 
 
 @section[#:tag "parse-symbol"]{Reading Symbols}
@@ -798,15 +807,18 @@ one of the following forms:
        4]{@nonterm{digit@sub{16}}}, as in string escapes (see
        @secref["parse-string"]).}
 
- @item{@litchar{#\U}@kleenerange[1 6]{@nonterm{digit@sub{16}}}:
-       like @litchar{#\u}, but with up to six hexadecimal digits.}
+ @item{@litchar{#\U}@kleenerange[1 8]{@nonterm{digit@sub{16}}}:
+       like @litchar{#\u}, but with up to eight hexadecimal digits (although
+       only six digits are actually useful).}
 
  @item{@litchar{#\}@nonterm{c}: the character @nonterm{c}, as long
        as @litchar{#\}@nonterm{c} and the characters following it
-       do not match any of the previous cases, and as long as
+       do not match any of the previous cases, as long as
        @nonterm{c} or the
        character after @nonterm{c} is not
-       @racketlink[char-alphabetic?]{alphabetic}.}
+       @racketlink[char-alphabetic?]{alphabetic}, and as long as
+       @nonterm{c} is not an octal digit or is not followed by an
+       octal digit (i.e., two octal digits commit to a third).}
 
 ]
 
@@ -978,7 +990,7 @@ numbers are followed by a @litchar{.} intended to be read as a C-style
 infix dot, then a delimiter must precede the @litchar{.}.
 
 Finally, after reading any datum @racket[_x], the reader will seek
-through whitespace and comments and look for zero or more sequences of a
+through whitespace, BOM characters, and comments and look for zero or more sequences of a
 @litchar{.} followed by another datum @racket[_y]. It will then group
 @racket[_x] and @racket[_y] together in a @racket[#%dot] form so that
 @racket[_x.y] reads equal to @racket[(#%dot _x _y)].

@@ -64,8 +64,8 @@
              candidates))
     (car candidates)]))
 
-(define-runtime-path longdouble-c "../racket/src/longdouble/longdouble.c")
-(define-runtime-path longdouble-h "../racket/src/longdouble/longdouble.h")
+(define-runtime-path longdouble-c "../bc/src/longdouble/longdouble.c")
+(define-runtime-path longdouble-h "../bc/src/longdouble/longdouble.h")
 
 (unless skip-unpack?
   (case package-name
@@ -128,6 +128,10 @@
 ;; Avoid crash when CTFontCollectionCreateMatchingFontDescriptors fails:
 (define-runtime-path coretext-nullarray "patches/coretext-nullarray.patch")
 
+;; MinGW doesn't like `-Wp,-D_FORTIFY_SOURCE=2`, at least not without
+;; linking extra libraries:
+(define-runtime-path cairo-nofortfy-patch "patches/cairo-nofortify.patch")
+
 ;; Define some functions that aren't in Mac OS 10.5 (for the 32-bit build)
 (define-runtime-path pango-surrogate-patch "patches/pango-surrogate.patch")
 
@@ -150,11 +154,17 @@
 ;; Needed when building with old GCC, such as 4.0:
 (define-runtime-path gmp-weak-patch "patches/gmp-weak.patch")
 
+;; For `getline` on 32-bit Mac OS 10.6:
+(define-runtime-path libedit-getline-patch "patches/libedit-getline.patch")
+
 ;; Upstream patch to fix Win32 build:
 (define-runtime-path glib-win32-weekday-patch "patches/glib-win32-weekday.patch")
 
 ;; strerror_s is not available in XP
 (define-runtime-path glib-strerror-patch "patches/glib-strerror.patch")
+
+;; avoid a print before NULL check
+(define-runtime-path glib-debugprint-patch "patches/glib-debugprint.patch")
 
 ;; For now, disable glib functionality that depends on Mac OS 10.8:
 (define-runtime-path gcocoanotify-patch "patches/gcocoanotify.patch")
@@ -174,11 +184,13 @@
 ;; Disable libtool's management of standard libs so that
 ;; MinGW's -static-libstdc++ works:
 (define-runtime-path libtool-link-patch "patches/libtool-link.patch")
-(define-runtime-path libtool64-link-patch "patches/libtool64-link.patch")
 
 ;; Add FcSetFallbackDirs to set fallback directories dynamically:
 (define-runtime-path fcdirs-patch "patches/fcdirs.patch")
 (define-runtime-path fonts-conf "patches/fonts.conf")
+
+;; Skip `fc-config` on install:
+(define-runtime-path fc-config-patch "patches/fc-config.patch")
 
 ;; Avoid problems compiling with an old version of g++
 (define-runtime-path harfbuzz-oldcompiler-patch "patches/harfbuzz-oldcompiler.patch")
@@ -186,6 +198,9 @@
 ;; Adapt inline-function handling for an old gcc
 (define-runtime-path gmp-inline-patch "patches/gmp-inline.patch")
 
+;; Configure for AArch64
+(define-runtime-path openssl-aarch64osx-patch "patches/openssl-aarch64osx.patch")
+  
 ;; --------------------------------------------------
 
 (define (replace-in-file file orig new)
@@ -209,6 +224,8 @@
 
 (define (sdk n)
   (~a " -isysroot /Developer/SDKs/MacOSX10."n".sdk -mmacosx-version-min=10."n))
+(define mac32-sdk 6)
+(define mac64-sdk 9)
 
 (define all-env
   (cond
@@ -228,13 +245,20 @@
         (list "CC" (~a win-prefix "-gcc -static-libgcc")))])]
    [mac?
     (cond
+     [aarch64?
+      (define flags "-arch arm64 -mmacosx-version-min=11")
+      (list
+       (list "CPPFLAGS" (~a flags))
+       (list "LDFLAGS" (~a flags)))]
      [m32?
-      (define sdk-flags (sdk 5))
+      (define sdk-flags (sdk mac32-sdk))
       (list
        (list "CPPFLAGS" (~a "-m32" sdk-flags))
-       (list "LDFLAGS" (~a "-m32" sdk-flags)))]
+       (list "LDFLAGS" (~a "-m32" sdk-flags
+                           ;; suppress deprecation warning:
+                           " -Wl,-w")))]
      [else
-      (define sdk-flags (sdk 9))
+      (define sdk-flags (sdk mac64-sdk))
       (list
        (list "CPPFLAGS" (~a "-m64" sdk-flags))
        (list "LDFLAGS" (~a "-m64" sdk-flags)))])]
@@ -314,6 +338,7 @@
                 #:setup [setup null]
                 #:patches [patches null]
                 #:post-patches [post-patches null]
+                #:install-patches [install-patches null]
                 #:fixup [fixup #f]
                 #:fixup-proc [fixup-proc #f])
   (for ([d (in-list (append (if (or (equal? package-name "pkg-config")
@@ -325,7 +350,7 @@
                             deps))])
     (unless (file-exists? (build-path dest "stamps" d))
       (error 'build "prerequisite needed: ~a" d)))
-  (values env exe args make make-install setup patches post-patches fixup fixup-proc))
+  (values env exe args make make-install setup patches post-patches install-patches fixup fixup-proc))
 
 (define path-flags
   (list (list "CPPFLAGS" (~a "-I" dest "/include"))
@@ -344,11 +369,15 @@
     (error (format "build ~a only for Linux" package-name))))
 
 (define-values (extra-env configure-exe extra-args make-command make-install-command 
-                          setup patches post-patches fixup fixup-proc)
+                          setup patches post-patches install-patches fixup fixup-proc)
   (case package-name
     [("pkg-config") (config #:configure (list "--with-internal-glib"))]
     [("sed") (config)]
     [("longdouble") (config)]
+    [("libedit") (config
+                  #:patches (if (and mac? m32?)
+                                (list libedit-getline-patch)
+                                null))]
     [("libiconv")
      (nonmac-only)
      (config)]
@@ -371,15 +400,20 @@
                                  (~a "mingw" (if m32? "" "64"))
                                  "shared")]
                           [mac?
-                           (list "./Configure"
-                                 #f
-                                 "shared"
-                                 (cond
-                                  [ppc? "darwin-ppc-cc"]
-                                  [m32? "darwin-i386-cc"]
-                                  [else "darwin64-x86_64-cc"])
-                                 (car (regexp-match #rx"-mmacosx-version-min=[0-9.]*"
-                                                    (cadr (assoc "CPPFLAGS" all-env)))))]
+			   (append
+                            (list "./Configure"
+                                  #f
+                                  "shared"
+                                  (cond
+                                   [ppc? "darwin-ppc-cc"]
+                                   [m32? "darwin-i386-cc"]
+                                   [aarch64? "darwin64-aarch64-cc"]
+                                   [else "darwin64-x86_64-cc"])
+                                  (car (regexp-match #rx"-mmacosx-version-min=[0-9.]*"
+                                                     (cadr (assoc "CPPFLAGS" all-env)))))
+			    (if aarch64?
+				'("no-asm")
+				null))]
                           [else
                            (list "./Configure"
                                  #f
@@ -387,6 +421,7 @@
                                  "linux-x86_64")])
 	     #:make make
              #:make-install (~a make " install_sw")
+	     #:patches (list openssl-aarch64osx-patch)
              #:fixup (and win?
                           (~a "cd " (build-path dest "bin")
                               " && mv libssl-1_1" (if m32? "" "-x64") ".dll ssleay32.dll"
@@ -446,7 +481,10 @@
                                 " FreeSans.ttf" 
                                 " FreeSerif.ttf" 
                                 " " dest "/lib/fonts"))]
-    [("libffi") (config)]
+    [("libffi")
+     (if (and mac? aarch64?)
+	 (config #:configure '("-host=aarch64-apple-darwin"))
+	 (config))]
     [("zlib")
      (nonmac-only)
      (config #:make (if win?
@@ -470,11 +508,13 @@
                                     ;; Disable Valgrind support, which particularly
                                     ;; goes wrong for 64-bit Windows builds.
                                     (list (list "CPPFLAGS" "-DNVALGRIND=1")))
-                      #:patches (cond
-                                  [win? (list glib-win32-weekday-patch
-                                              glib-strerror-patch)]
-                                  [mac? (list gcocoanotify-patch)]
-                                  [else null]))]
+                      #:patches (append
+                                 (cond
+                                   [win? (list glib-win32-weekday-patch
+                                               glib-strerror-patch)]
+                                   [mac? (list gcocoanotify-patch)]
+                                   [else null])
+                                 (list glib-debugprint-patch)))]
     [("libpng") (config #:depends (if (or win? linux?) '("zlib") '())
                         #:env (if (or linux? win?)
                                   (append
@@ -492,12 +532,16 @@
                                                     `("--without-libiconv-prefix"
                                                       "--without-libintl-prefix")
                                                     '()))
-                            #:patches (list fcdirs-patch))]
-    [("pixman") (config #:patches (cond
-                                    [(and win? (not m32?)) (list noforceinline-patch)]
-                                    [ppc? (list pixman-altivec-patch)]
-                                    [else null])
-                        #:post-patches (list pixman-notest-patch))]
+                            #:patches (list fcdirs-patch)
+			    #:install-patches (cond
+					       [(and mac? aarch64?) (list fc-config-patch)]
+					       [else null]))]
+    [("pixman") (config #:patches (append
+                                   (cond
+                                     [(and win? (not m32?)) (list noforceinline-patch)]
+                                     [ppc? (list pixman-altivec-patch)]
+                                     [else null])
+                                   (list pixman-notest-patch)))]
     [("cairo")
      (when mac?
        (define zlib.pc (build-path dest "lib" "pkgconfig" "zlib.pc"))
@@ -518,9 +562,13 @@
                           (if mac?
                               '("CFLAGS=-include Kernel/uuid/uuid.h")
                               '()))
-             #:patches (list cairo-emptyglyph.patch
-                             cairo-coretext-patch
-                             courier-new-patch))]
+             #:patches (append
+                        (list cairo-emptyglyph.patch
+                              cairo-coretext-patch
+                              courier-new-patch)
+                        (if win?
+                            (list cairo-nofortfy-patch)
+                            null)))]
     [("harfbuzz") (config #:depends '("fontconfig" "freetype" "cairo")
                           #:configure '("--without-icu")
                           #:env cxx-env
@@ -549,7 +597,7 @@
                                   (if mac?
                                       (list pango-preferoblique-patch)
                                       null)
-                                  (if (and mac? m32?)
+                                  (if (and mac? m32? (mac32-sdk . < . 6))
                                       (list pango-surrogate-patch)
                                       null)
                                   (if (or mac? win?)
@@ -558,6 +606,9 @@
     [("gmp") (config #:patches (if gcc-4.0? (list gmp-weak-patch) null)
                      #:configure (append
                                   '("--enable-shared" "--disable-static")
+				  (if (and mac? aarch64?)
+				      '("-host=aarch64-apple-darwin")
+				      null)
                                   (if (and mac? (not ppc?))
                                       '("--build=corei-apple-darwin")
                                       null)
@@ -576,9 +627,7 @@
                                        cxx-env)
                          #:patches (list nonochecknew-patch)
                          #:post-patches (if win?
-                                            (list (if m32?
-                                                      libtool-link-patch
-                                                      libtool64-link-patch))
+                                            (list libtool-link-patch)
                                             null)
                          #:configure '("--enable-zlib"
 				       "--disable-splash-output"
@@ -626,6 +675,8 @@
     (for ([p (in-list post-patches)])
       (system/show (~a "patch -p2 < " p))))
   (system/show make-command)
+  (for ([p (in-list install-patches)])
+    (system/show (~a "patch -p2 < " p)))
   (system/show make-install-command)
   (when fixup
     (system/show fixup))

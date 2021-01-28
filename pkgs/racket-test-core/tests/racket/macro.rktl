@@ -3,6 +3,10 @@
 
 (Section 'macro)
 
+(test #f struct-predicate-procedure? syntax?)
+
+(test #t struct-predicate-procedure? exn:fail:syntax?)
+
 (error-test #'(define-syntaxes () (values 1)) exn:application:arity?)
 (error-test #'(define-syntaxes () (values 1 2)) exn:application:arity?)
 (error-test #'(define-syntaxes (x) (values 1 2)) exn:application:arity?)
@@ -758,8 +762,8 @@
         #:trim-error #rx"^[^\n]*\n[^\n]*")
   
   (define (in-defctx s) `(let () ,s))
-  (test '("(#(struct:liberal-define-context))\n10\n" "") go '(definition-context expression) in-defctx 'prop:procedure)
-  (test '("(#(struct:liberal-define-context))\n10\n" "") go '(definition-context) in-defctx 'prop:procedure)
+  (test '("(#<liberal-define-context>)\n10\n" "") go '(definition-context expression) in-defctx 'prop:procedure)
+  (test '("(#<liberal-define-context>)\n10\n" "") go '(definition-context) in-defctx 'prop:procedure)
   (test '("expression\n10\n" "") go '(expression) in-defctx 'prop:procedure)
   (test '("" "m: not allowed in context\n  expansion context: definition-context") go '() in-defctx 'prop:procedure
         #:trim-error #rx"^[^\n]*\n[^\n]*")
@@ -1043,6 +1047,29 @@
       (sloop (cdr stx) in-prop?)])))
 
 ;; ----------------------------------------
+;; Check that an implicitly introduced #%app has the same
+;; `syntax-original?` as its parenthesized form
+
+(let ([find (lambda (e sym)
+              (let loop ([s (syntax-property e 'origin)])
+                (cond
+                  [(and (identifier? s)
+                        (eq? sym (syntax-e s)))
+                   s]
+                  [(pair? s) (or (loop (car s)) (loop (cdr s)))]
+                  [else #f])))])
+  ;; expecting `#%app` from `racket/base` to reqrite to core `#%app`
+  (test #t syntax-original? (find (expand #'(+ 1 2)) '#%app))
+  (test #t syntax-property (find (expand #'(+ 1 2)) '#%app) 'implicit-made-explicit)
+  (test #t syntax-original? (find (expand #'100) '#%datum))
+  (test #t syntax-property (find (expand #'100) '#%datum) 'implicit-made-explicit)
+
+  (test #f syntax-original? (find (expand (datum->syntax #'here '(+ 1 2))) '#%app))
+  (test #t syntax-property (find (expand (datum->syntax #'here '(+ 1 2))) '#%app) 'implicit-made-explicit)
+  (test #f syntax-original? (find (expand (datum->syntax #'here '100)) '#%datum))
+  (test #t syntax-property (find (expand (datum->syntax #'here '100)) '#%datum) 'implicit-made-explicit))
+
+;; ----------------------------------------
 
 (err/rt-test (syntax-local-lift-require 'abc #'def))
 
@@ -1248,6 +1275,22 @@
                                                          (define x 10)))])
              (void))))
   (test 10 eval `(dynamic-require '(submod 'm m) 'x)))
+
+;; ----------------------------------------
+;; Check bad lift provide
+
+(err/rt-test
+ (eval '(module a '#%kernel
+          (#%require (for-syntax '#%kernel))
+          (define-syntaxes (m)
+            (lambda (stx)
+              (let-values ([(ctx) (syntax-local-make-definition-context)])
+                (syntax-local-bind-syntaxes (list (quote-syntax x)) (quote-syntax 5) ctx)
+                (syntax-local-lift-provide (internal-definition-context-introduce ctx (quote-syntax x) 'add))
+                (quote-syntax (void)))))
+          (m)))
+ exn:fail:syntax?
+ #rx"provided identifier is not defined or required")
 
 ;; ----------------------------------------
 ;; Check module lifting in a top-level context
@@ -1729,7 +1772,7 @@
 (let ()
   (define m
     '(module m racket/base
-      (define-syntax-rule (m) 1)
+      (define-syntax-rule (m) '1)
       (module+ main
         (m))))
 
@@ -2447,19 +2490,40 @@
 
 (module rename-transformer-introduction-scope racket/base
   (require (for-syntax racket/base))
-  (provide sym free-id=? original?)
+  (provide sym free-id=? original? sameloc?
+           set-sym set-free-id=? set-original? set-sameloc?)
   (define x #f)
   (define-syntax y (make-rename-transformer #'x))
   (define-syntax (m stx)
-    (define expanded-y (syntax-local-introduce (local-expand #'y 'expression '())))
-    #`(values '#,(syntax-e expanded-y)
-              '#,(free-identifier=? expanded-y #'x)
-              '#,(syntax-original? expanded-y)))
-  (define-values (sym free-id=? original?) (m)))
+    (define orig-y #'y)
+    (define expanded-y (syntax-local-introduce (local-expand orig-y 'expression '())))
+    (define expanded-set-y (syntax-local-introduce (local-expand #`(set! #,orig-y 5) 'expression '())))
+    (define (same-srcloc? a b) (and (equal? (syntax-source a) (syntax-source b))
+                                    (equal? (syntax-line a) (syntax-line b))
+                                    (equal? (syntax-column a) (syntax-column b))))
+    (syntax-case expanded-set-y ()
+      [(_ set!ed-y _)
+       #`(values '#,(syntax-e expanded-y)
+                 '#,(free-identifier=? expanded-y #'x)
+                 '#,(syntax-original? expanded-y)
+                 '#,(same-srcloc? expanded-y orig-y)
+                 '#,(syntax-e #'set!ed-y)
+                 '#,(free-identifier=? #'set!ed-y #'x)
+                 '#,(syntax-original? #'set!ed-y)
+                 '#,(same-srcloc? #'set!ed-y orig-y))]))
+  (define-values (sym free-id=? original? sameloc?
+                      set-sym set-free-id=? set-original? set-sameloc?)
+    (m)))
 
 (test 'x dynamic-require ''rename-transformer-introduction-scope 'sym)
 (test #t dynamic-require ''rename-transformer-introduction-scope 'free-id=?)
 (test #f dynamic-require ''rename-transformer-introduction-scope 'original?)
+(test #t dynamic-require ''rename-transformer-introduction-scope 'sameloc?)
+
+(test 'x dynamic-require ''rename-transformer-introduction-scope 'set-sym)
+(test #t dynamic-require ''rename-transformer-introduction-scope 'set-free-id=?)
+(test #f dynamic-require ''rename-transformer-introduction-scope 'set-original?)
+(test #t dynamic-require ''rename-transformer-introduction-scope 'set-sameloc?)
 
 ;; ----------------------------------------
 ;; Make sure replacing scopes of binding on reference does not
@@ -2539,6 +2603,20 @@
           (def-g g)
           (def-h h x)]
     (test 'ok values (f 'ok))))
+
+;; ----------------------------------------
+;; Make sure that `block` does not evaluate phase 1 expressions multiple times
+
+(module block-define-syntax-evaluation racket/base
+  (require (for-syntax racket/base) racket/block)
+  (provide final-counter)
+
+  (define-for-syntax counter 0)
+  (define-syntax (get-counter stx) #`'#,counter)
+  (block (define-syntax m (set! counter (add1 counter))))
+  (define final-counter (get-counter)))
+
+(test 1 dynamic-require ''block-define-syntax-evaluation 'final-counter)
 
 
 (report-errs)
