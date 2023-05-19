@@ -22,17 +22,17 @@ parameter to @racket[#f] or supplying the @DFlag{compile-any}/@Flag{M}
 flag on startup. See @racket[current-compile-target-machine] for more
 information.
 
-Other compilation modes depend on the Racket variant
-(3m/CGC versus CS).
+Other compilation modes depend on the Racket implementation (see
+@secref["implementations"]).
 
 
-@subsection[#:tag "3m-compiler-modes"]{3m and CGC Compilation Modes}
+@subsection[#:tag "3m-compiler-modes"]{BC Compilation Modes}
 
-The 3m and CGC variants of Racket support two
+The @tech{BC} implementation of Racket supports two
 compilation modes: bytecode and machine-independent. The bytecode
 format is also machine-independent in the sense that it works the same
-on all operating systems for the 3m and/or CGC variants
-of Racket, but it does not work with the CS variant of Racket.
+on all operating systems for the BC implementation
+of Racket, but it does not work with the CS implementation of Racket.
 
 Bytecode is further compiled to machine code at run time, unless the
 JIT compiler is disabled. See @racket[eval-jit-enabled].
@@ -40,10 +40,10 @@ JIT compiler is disabled. See @racket[eval-jit-enabled].
 
 @subsection[#:tag "cs-compiler-modes"]{CS Compilation Modes}
 
-The CS variant of Racket supports several compilation modes:
+The @tech{CS} implementation of Racket supports several compilation modes:
 machine code, machine-independent, interpreted, and JIT. Machine code
 is the primary mode, and the machine-independent mode is the same as
-for 3m and CGC. Interpreted mode uses an interpreter at
+for BC. Interpreted mode uses an interpreter at
 the level of core @tech{linklet} forms with no compilation. JIT mode
 triggers compilation of individual function forms on demand.
 
@@ -79,7 +79,7 @@ compiled forms whenever a Racket form is compiled. For all Racket
 variants, the output shows one or more @tech{linklets} that are
 generated from the original Racket form.
 
-For the CS variant of Racket, a ``schemified'' version of the linklet
+For the @tech{CS} implementation of Racket, a ``schemified'' version of the linklet
 is also shown as the translation of the @racket[linklet] form to a
 Chez Scheme procedure form. The following environment variables imply
 @envvar{PLT_LINKLET_SHOW} and show additional intermediate compiled
@@ -88,8 +88,9 @@ forms or adjust the way forms are displayed:
 @itemlist[
 
   @item{@envvar-indexed{PLT_LINKLET_SHOW_GENSYM} --- prints full
-        generated names, instead of abbreviations that may conflate
-        different symbols}
+        generated names, instead of abbreviations; the default behavior
+	corresponds to Chez Scheme's @tt{'pretty/suffix} mode for
+	@tt{print-gensym}}
 
    @item{@envvar-indexed{PLT_LINKLET_SHOW_PRE_JIT} --- shows a
          schemified forms before a transformation to JIT mode, which
@@ -109,15 +110,18 @@ forms or adjust the way forms are displayed:
          compilation of form that were previously prepared by
          compilation with @envvar{PLT_CS_JIT} set}
 
-   @item{@envvar-indexed{PLT_LINKLET_SHOW_PATHS} --- show lifted
-         path and serialization information alongside a schemified form}
-
    @item{@envvar-indexed{PLT_LINKLET_SHOW_KNOWN} --- show recorded
          known-binding information alongside a schemified form}
 
    @item{@envvar-indexed{PLT_LINKLET_SHOW_CP0} --- show a schemified
          form after transformation by Chez Scheme's front-end
          optimizer}
+
+   @item{@envvar-indexed{PLT_LINKLET_SHOW_PASSES} --- show the
+         intermediate form of a schemified linklet after the specified
+         passes (listed space-separated) in Chez Scheme's internal
+         representation; the special name @tt{all} will show the
+         intermediate form after all Chez Scheme passes}
 
    @item{@envvar-indexed{PLT_LINKLET_SHOW_ASSEMBLY} --- show the
          compiled form of a schemified linklet in Chez Scheme's
@@ -130,3 +134,6 @@ set on startup, then Racket prints cumulative timing information about
 compilation and evaluation times on exit. When the
 @envvar-indexed{PLT_EXPANDER_TIMES} environment variable is set,
 information about macro-expansion time is printed on exit.
+
+@history[#:changed "8.8.0.10" @elem{Added special pass name @tt{all}
+                                    to @envvar{PLT_LINKLET_SHOW_PASSES}}]

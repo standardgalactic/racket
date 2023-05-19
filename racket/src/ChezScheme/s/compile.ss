@@ -216,15 +216,33 @@
                                 (let ([r ($reloc (constant reloc-x86_64-popcount) n (fx- a1 ra))])
                                   (mkc0 (cdr c*) a (cons r r*) a1 x*)))]
                              [else (c-assembler-output-error c)])]
+                          [(riscv64)
+                           (record-case c
+                             [(riscv64-abs) (n x)
+                              (let ([a1 (fx- a 20)])
+                                (let ([x* (cons (mkcode x) x*)])
+                                  (let ([r ($reloc (constant reloc-riscv64-abs) n (fx- a1 ra))])
+                                    (mkc0 (cdr c*) a (cons r r*) a1 x*))))]
+                             [(riscv64-jump) (n x)
+                              (let ([a1 (fx- a 24)])
+                                (let ([x* (cons (mkcode x) x*)])
+                                  (let ([r ($reloc (constant reloc-riscv64-jump) n (fx- a1 ra))])
+                                    (mkc0 (cdr c*) a (cons r r*) a1 x*))))]
+                             [(riscv64-call) (n x)
+                              (let ([a1 (fx- a 24)])
+                                (let ([x* (cons (mkcode x) x*)])
+                                  (let ([r ($reloc (constant reloc-riscv64-call) n (fx- a1 ra))])
+                                    (mkc0 (cdr c*) a (cons r r*) a1 x*))))]
+                             [else (c-assembler-output-error c)])]
                           [(pb)
                            (record-case c
                              [(pb-abs) (n x)
-                              (let ([a1 (fx- a 16)]) ; movz, movk, movk, movk
+                              (let ([a1 (fx- a (constant ptr-bytes))]) ; nops
                                 (let ([x* (cons (mkcode x) x*)])
                                   (let ([r ($reloc (constant reloc-pb-abs) n (fx- a1 ra))])
                                     (mkc0 (cdr c*) a (cons r r*) a1 x*))))]
                              [(pb-proc) (n x)
-                              (let ([a1 (fx- a 20)]) ; movz, movk, movk, movk, b/call
+                              (let ([a1 (fx- a (constant ptr-bytes) 4)]) ; nops, b/call
                                 (let ([x* (cons (mkcode x) x*)])
                                   (let ([r ($reloc (constant reloc-pb-proc) n (fx- a1 ra))])
                                     (mkc0 (cdr c*) a (cons r r*) a1 x*))))]
@@ -296,6 +314,10 @@
                           (record-case x
                             [(ppc32-abs ppc32-call ppc32-jump) (n x) (build x d)]
                             [else (void)])]
+                         [(riscv64)
+                          (record-case x
+                            [(riscv64-abs riscv64-call riscv64-jump) (n x) (build x d)]
+                           [else (void)])]
                          [(pb)
                           (record-case x
                             [(pb-abs pb-proc) (n x) (build x d)]
@@ -465,14 +487,29 @@
                                (let ([r ($reloc (constant reloc-x86_64-popcount) n (fx- a1 ra))])
                                  (prf0 (cdr c*) a (cons r r*) a1 (cons x x*))))]
                             [else (c-assembler-output-error c)])]
+                         [(riscv64)
+                          (record-case c
+                            [(riscv64-abs) (n x)
+                             (let ([a1 (fx- a 20)])
+                               (let ([r ($reloc (constant reloc-riscv64-abs) n (fx- a1 ra))])
+                                 (prf0 (cdr c*) a (cons r r*) a1 (cons x x*))))]
+                            [(riscv64-jump) (n x)
+                             (let ([a1 (fx- a 24)])
+                               (let ([r ($reloc (constant reloc-riscv64-jump) n (fx- a1 ra))])
+                                 (prf0 (cdr c*) a (cons r r*) a1 (cons x x*))))]
+                            [(riscv64-call) (n x)
+                             (let ([a1 (fx- a 24)])
+                               (let ([r ($reloc (constant reloc-riscv64-call) n (fx- a1 ra))])
+                                 (prf0 (cdr c*) a (cons r r*) a1 (cons x x*))))]
+                            [else (c-assembler-output-error c)])]
                          [(pb)
                           (record-case c
                             [(pb-abs) (n x)
-                             (let ([a1 (fx- a 16)]) ; movz, movk, movk, movk
+                             (let ([a1 (fx- a (constant ptr-bytes))]) ; nops
                                (let ([r ($reloc (constant reloc-pb-abs) n (fx- a1 ra))])
                                  (prf0 (cdr c*) a (cons r r*) a1 (cons x x*))))]
                             [(pb-proc) (n x)
-                             (let ([a1 (fx- a 20)]) ; movz, movk, movk, movk, b/call
+                             (let ([a1 (fx- a (constant ptr-bytes) 4)]) ; nops, b/call
                                (let ([r ($reloc (constant reloc-pb-proc) n (fx- a1 ra))])
                                  (prf0 (cdr c*) a (cons r r*) a1 (cons x x*))))]
                             [else (c-assembler-output-error c)])]
@@ -487,7 +524,7 @@
                            (if omit-rtds? (constant fasl-omit-rtds) 0))])
               (and (not (fx= flags 0)) flags))])
      (c-build-fasl x t a?)
-     ($fasl-start p t situation x
+     ($fasl-start p t situation x a?
        (lambda (x p) (c-faslobj x t p a?)))))
 
 (define-record-type visit-chunk
@@ -611,7 +648,8 @@
                             (parameterize ([$target-machine (machine-type)])
                               (let ([t ($fasl-table)])
                                 ($fasl-enter x1 t (constant annotation-all) 0)
-                                ($fasl-start wpoop t (constant fasl-type-visit-revisit) x1 (lambda (x p) ($fasl-out x p t (constant annotation-all)))))))))))
+                                ($fasl-start wpoop t (constant fasl-type-visit-revisit) x1 (constant annotation-all)
+                                             (lambda (x p) ($fasl-out x p t (constant annotation-all)))))))))))
                   (let-values ([(rcinfo* lpinfo* final*) (compile-file-help1 x1 source-info-string)])
                     (when hostop
                       ; the host library file contains expander output possibly augmented with
@@ -622,7 +660,8 @@
                           (parameterize ([$target-machine (machine-type)])
                             (let ([t ($fasl-table)])
                               ($fasl-enter x1 t (constant annotation-all) 0)
-                              ($fasl-start hostop t (constant fasl-type-visit-revisit) x1 (lambda (x p) ($fasl-out x p t (constant annotation-all)))))))))
+                              ($fasl-start hostop t (constant fasl-type-visit-revisit) x1 (constant annotation-all)
+                                           (lambda (x p) ($fasl-out x p t (constant annotation-all)))))))))
                     (cfh0 (+ n 1) (cons rcinfo* rrcinfo**) (cons lpinfo* rlpinfo**) (cons final* rfinal**)))))))))))
 
 (define library/program-info?
@@ -975,7 +1014,9 @@
         (lambda (src-path lib-path lib-exists?)
           (and lib-exists?
                (begin
-                 (when (and src-path (time<? (file-modification-time lib-path) (file-modification-time src-path)))
+                 (when (and src-path
+                            (eq? (library-timestamp-mode) 'modification-time)
+                            (time<? (file-modification-time lib-path) (file-modification-time src-path)))
                    (warningf who "~a file ~a is older than source file ~a" what lib-path src-path))
                  (when (import-notify) (fprintf (console-output-port) "reading ~a\n" lib-path))
                  lib-path))))))
@@ -1248,7 +1289,7 @@
       (lambda (node thunk)
         (build-primcall '$install-library/rt-code `(quote ,(library-node-uid node)) thunk)))
 
-    (define-pass patch : Lsrc (ir env) -> Lsrc ()
+    (define-pass patch : Lsrc (ir env exts-table) -> Lsrc ()
       (definitions
         (define with-initialized-ids
           (lambda (old-id* proc)
@@ -1297,7 +1338,17 @@
         [(letrec* ([,x* ,e*] ...) ,body)
          (with-initialized-ids x*
            (lambda (x*)
-             `(letrec* ([,x* ,(map Expr e*)] ...) ,(Expr body))))])
+             `(letrec* ([,x* ,(map Expr e*)] ...) ,(Expr body))))]
+        [(cte-optimization-loc ,box ,e ,exts)
+         (define new-exts (or (hashtable-ref exts-table exts #f)
+                              (let ([new-exts (map (lambda (p)
+                                                     (let ([x (car p)])
+                                                       (cons (or (prelex-operand x) x) (cdr p))))
+                                                   exts)])
+                                (hashtable-set! exts-table exts new-exts)
+                                new-exts)))
+         (let ([e (Expr e)])
+           `(cte-optimization-loc ,box ,e ,new-exts))])
       (CaseLambdaClause : CaseLambdaClause (ir) -> CaseLambdaClause ()
         [(clause (,x* ...) ,interface ,body)
          (with-initialized-ids x*
@@ -1365,7 +1416,8 @@
                 (nanopass-case (Lexpand Program) (program-node-ir program)
                   [(program ,uid ,body) body])
                 node*)
-              (make-patch-env (list node*))))))
+              (make-patch-env (list node*))
+              (make-eq-hashtable)))))
 
     (define build-combined-library-ir
       (lambda (cluster*)
@@ -1440,7 +1492,8 @@
                                                    ,body))
                                     body cluster))
                       (build-void) cluster* cluster-idx*)))))
-        (make-patch-env cluster*)))))
+          (make-patch-env cluster*)
+          (make-eq-hashtable)))))
 
   (with-output-language (Lexpand Outer)
     (define add-recompile-info
@@ -1605,7 +1658,8 @@
                     (let ([x (fold-left (lambda (outer ir) (with-output-language (Lexpand Outer) `(group ,outer ,ir)))
                                (car ir*) (cdr ir*))])
                       ($fasl-enter x t (constant annotation-all) 0)
-                      ($fasl-start wpoop t (constant fasl-type-visit-revisit) x (lambda (x p) ($fasl-out x p t (constant annotation-all))))))))))))))
+                      ($fasl-start wpoop t (constant fasl-type-visit-revisit) x (constant annotation-all)
+                                   (lambda (x p) ($fasl-out x p t (constant annotation-all))))))))))))))
 
   (define build-required-library-list
     (lambda (node* visit-lib*)
@@ -1808,7 +1862,7 @@
 
   (set-who! make-boot-file
     (lambda (outfn bootfile* . infn*)
-      (do-make-boot-file who outfn (machine-type) bootfile* infn*)))
+      (do-make-boot-file who outfn (constant machine-type-name) bootfile* infn*)))
 
   (set-who! $make-boot-file
     (lambda (outfn machine bootfile* . infn*)
@@ -1818,7 +1872,7 @@
    ; exported interface: machine-type implicit and requires one or more
    ; subordinate boot files
     (lambda (out bootfile . bootfiles)
-      (do-make-boot-header who out (machine-type) (cons bootfile bootfiles))))
+      (do-make-boot-header who out (constant machine-type-name) (cons bootfile bootfiles))))
 
   (set-who! $make-boot-header
     ; create boot loader (invoke) for entry into Scheme from C
@@ -2218,11 +2272,13 @@
       [(in out)
        (unless (string? in) ($oops who "~s is not a string" in))
        (unless (string? out) ($oops who "~s is not a string" out))
-       ($maybe-compile-file who in out (compile-program-handler))]
+       ($maybe-compile-file who in out (compile-program-handler))
+       (void)]
       [(in)
        (unless (string? in) ($oops who "~s is not a string" in))
        (let-values ([(in out) (in&out in)])
-         ($maybe-compile-file who in out (compile-program-handler)))]))
+         ($maybe-compile-file who in out (compile-program-handler)))
+       (void)]))
 
   (set-who! compile-to-file
     (rec compile-to-file

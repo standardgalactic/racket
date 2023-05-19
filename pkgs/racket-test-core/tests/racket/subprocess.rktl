@@ -2,7 +2,8 @@
 (load-relative "testing.rktl")
 
 (require racket/system
-         racket/file)
+         racket/file
+         ffi/unsafe/port)
 
 (Section 'subprocess)
 
@@ -284,7 +285,10 @@
 
     (test f f f2)
     (test f2 f2 f2)
-    (test f2 f f)))
+    (test f2 f f))
+
+  (close-input-port f)
+  (close-output-port f2))
 
 ;; system* ------------------------------------------------------
 
@@ -595,7 +599,10 @@
                         exe
                         (path->complete-path "unix_check.c" (or (current-load-relative-directory)
                                                                 (current-directory)))))
-      (test #t 'subprocess-state (system* exe)))
+      (test #t 'subprocess-state (let ([o (open-output-bytes)])
+                                   (or (parameterize ([current-output-port o])
+                                         (system* exe))
+                                       (get-output-bytes o)))))
     (delete-directory/files dir)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -672,6 +679,55 @@
   (try-arg "a\\\\\\\\\\\"b" "a\\\\\"b"))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; check file-descriptor sharing
+
+;; This test includes the questionable action of creating a bad file
+;; descriptor and expecting the OS to tell us that it's bad (implicit
+;; in `read-char`). As of Mac OS 13.2 Ventura, the select() system
+;; call only complains about bad file descriptors up to number 24; if
+;; a bad 25 or up is supplied, it select() seems to ignore bad
+;; descriptors. So, take care that this test is not run with too many
+;; unclosed ports.
+
+(define (check-sharing keep-mode)
+  (define fn (make-temporary-file))
+  (call-with-output-file*
+   fn
+   #:exists 'update
+   (lambda (o)
+     (display "123" o)))
+
+  (define f (open-input-file fn))
+  (define fd (unsafe-port->file-descriptor f))
+
+  (define o (open-output-bytes))
+  (define e (open-output-bytes))
+
+  (define ok?
+    (parameterize ([current-output-port o]
+                   [current-error-port e]
+                   [current-subprocess-keep-file-descriptors keep-mode])
+      (system* self
+               "-l" "racket/base"
+               "-e"
+               "(displayln 'y)"
+               "-l" "ffi/unsafe/port"
+               "-e"
+               (format "(define f (unsafe-file-descriptor->port ~a 'in '(read)))" fd)
+               "-e"
+               "(displayln (read-char f))")))
+
+  (close-input-port f)
+  (delete-directory/files fn)
+
+  (list ok? (get-output-bytes o) (regexp-match? #rx"error reading" (get-output-bytes e))))
+
+(unless (eq? 'windows (system-type))
+  (test '(#t #"y\n1\n" #f) check-sharing 'all))
+(test '(#f #"y\n" #t) check-sharing 'inherited)
+(test '(#f #"y\n" #t) check-sharing '())
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;; Check for cleaning up a subprocess without waiting for it to complete:
 (for ([j 10])
@@ -685,6 +741,49 @@
        (close-input-port o)
        (close-input-port e))))
   (collect-garbage))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Check that a-exit custodians are run on exit, even if the
+
+(for ([cust (list '(current-custodian)
+                  '(make-custodian)
+                  '(make-custodian (make-custodian)))])
+  (define-values (sp o i e) (subprocess #f #f #f self
+                                        "-l" "racket/base"
+                                        "-l" "ffi/unsafe/custodian"
+                                        "-W" "error"
+                                        "-e" "(eval (read))"))
+  (write `(register-custodian-shutdown 'hello
+                                       (lambda (x)
+                                         (log-error "bye"))
+                                       ,cust
+                                       #:at-exit? #t)
+         i)
+  (close-output-port i)
+  (read-bytes 1024 o)
+  (close-input-port o)
+  (test #"bye\n" read-bytes 1024 e)
+  (close-input-port e)
+  (subprocess-wait sp))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that `--eval` and similar can set the namespace
+
+(let ()
+    (define-values (sp o i e) (subprocess #f #f #f self
+                                          "-e" (format "~s"
+                                                       '(let ([ns (make-base-namespace)])
+                                                          (eval '(define here "yes") ns)
+                                                          (current-namespace ns)))
+                                          "-e" "(displayln here)"))
+    (close-output-port i)
+    (test "yes" read-line o)
+    (read-bytes 1024 o)
+    (read-bytes 1024 e)
+    (sync sp)
+    (close-input-port e)
+    (close-input-port o))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

@@ -5,7 +5,8 @@
          "import.rkt"
          "mutated-state.rkt"
          "simple.rkt"
-         "find-known.rkt")
+         "find-known.rkt"
+         "lambda.rkt")
 
 (provide (struct-out struct-type-info)
          struct-type-info-rest-properties-list-pos
@@ -17,6 +18,7 @@
                                field-count
                                pure-constructor?
                                authentic?
+                               sealed?
                                prefab-immutables ; #f or immutable expression to be quoted
                                non-prefab-immutables ; #f or immutable expression to be quoted
                                constructor-name-expr  ; an expression
@@ -39,6 +41,7 @@
                 (known-struct-type?
                  (find-known u-parent prim-knowns knowns imports mutated)))
             (exact-nonnegative-integer? fields)
+            ((length rest) . <= . 6)
             (let ([prefab-imms
                    ;; The inspector argument needs to be missing or duplicable,
                    ;; and if it's not known to produce a value other than 'prefab,
@@ -64,6 +67,7 @@
                 (cond
                   [(not proc-spec) imms]
                   [(exact-nonnegative-integer? proc-spec) (cons proc-spec imms)]
+                  [(lambda? proc-spec) imms]
                   [else
                    (let ([proc-spec (unwrap proc-spec)])
                      (and
@@ -106,6 +110,7 @@
                                               (not (unwrap (list-ref rest 4))))
                                           (not (includes-property? 'prop:chaperone-unsafe-undefined)))
                                      (includes-property? 'prop:authentic)
+                                     (includes-property? 'prop:sealed)
                                      (if (eq? prefab-imms 'non-prefab)
                                          #f
                                          prefab-imms)
@@ -128,7 +133,9 @@
               (and (symbol? u-prop)
                    (or (known-struct-type-property/immediate-guard?
                         (find-known u-prop prim-knowns knowns imports mutated)))
-                   (simple? val prim-knowns knowns imports mutated simples #f))))
+                   (simple? val prim-knowns knowns imports mutated simples #f
+                            #:ordered? #t
+                            #:succeeds? #t))))
           vals)]
     [`null null]
     [`'() null]

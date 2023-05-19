@@ -54,6 +54,8 @@ Scheme_Object *scheme_system_type_proc;
 static Scheme_Object *make_string (int argc, Scheme_Object *argv[]);
 static Scheme_Object *string (int argc, Scheme_Object *argv[]);
 static Scheme_Object *string_p (int argc, Scheme_Object *argv[]);
+static Scheme_Object *immutable_string_p (int argc, Scheme_Object *argv[]);
+static Scheme_Object *mutable_string_p (int argc, Scheme_Object *argv[]);
 static Scheme_Object *string_length (int argc, Scheme_Object *argv[]);
 static Scheme_Object *string_eq (int argc, Scheme_Object *argv[]);
 static Scheme_Object *string_locale_eq (int argc, Scheme_Object *argv[]);
@@ -77,6 +79,9 @@ static Scheme_Object *string_titlecase (int argc, Scheme_Object *argv[]);
 static Scheme_Object *string_foldcase (int argc, Scheme_Object *argv[]);
 static Scheme_Object *string_locale_upcase (int argc, Scheme_Object *argv[]);
 static Scheme_Object *string_locale_downcase (int argc, Scheme_Object *argv[]);
+static Scheme_Object *char_grapheme_cluster_step (int argc, Scheme_Object *argv[]);
+static Scheme_Object *string_grapheme_cluster_span (int argc, Scheme_Object *argv[]);
+static Scheme_Object *string_grapheme_cluster_count (int argc, Scheme_Object *argv[]);
 static Scheme_Object *substring (int argc, Scheme_Object *argv[]);
 static Scheme_Object *string_append (int argc, Scheme_Object *argv[]);
 static Scheme_Object *string_append_immutable (int argc, Scheme_Object *argv[]);
@@ -98,6 +103,8 @@ static Scheme_Object *make_byte_string (int argc, Scheme_Object *argv[]);
 static Scheme_Object *byte_string (int argc, Scheme_Object *argv[]);
 static Scheme_Object *byte_p (int argc, Scheme_Object *argv[]);
 static Scheme_Object *byte_string_p (int argc, Scheme_Object *argv[]);
+static Scheme_Object *immutable_byte_string_p (int argc, Scheme_Object *argv[]);
+static Scheme_Object *mutable_byte_string_p (int argc, Scheme_Object *argv[]);
 static Scheme_Object *byte_string_length (int argc, Scheme_Object *argv[]);
 static Scheme_Object *byte_string_eq (int argc, Scheme_Object *argv[]);
 static Scheme_Object *byte_string_lt (int argc, Scheme_Object *argv[]);
@@ -185,9 +192,9 @@ ROSYM static Scheme_Object *fs_change_symbol, *target_machine_symbol, *cross_sym
 ROSYM static Scheme_Object *racket_symbol, *cgc_symbol, *_3m_symbol, *cs_symbol;
 ROSYM static Scheme_Object *force_symbol, *infer_symbol;
 ROSYM static Scheme_Object *platform_3m_path, *platform_cgc_path, *platform_cs_path;
-READ_ONLY static Scheme_Object *zero_length_char_string;
-READ_ONLY static Scheme_Object *zero_length_char_immutable_string;
-READ_ONLY static Scheme_Object *zero_length_byte_string;
+READ_ONLY Scheme_Object *scheme_zero_length_char_string;
+READ_ONLY Scheme_Object *scheme_zero_length_char_immutable_string;
+READ_ONLY Scheme_Object *scheme_zero_length_byte_string;
 
 SHARED_OK static char *embedding_banner;
 SHARED_OK static Scheme_Object *vers_str;
@@ -272,13 +279,13 @@ scheme_init_string (Scheme_Startup_Env *env)
   force_symbol = scheme_intern_symbol("force");
   infer_symbol = scheme_intern_symbol("infer");
 
-  REGISTER_SO(zero_length_char_string);
-  REGISTER_SO(zero_length_char_immutable_string);
-  REGISTER_SO(zero_length_byte_string);
-  zero_length_char_string = scheme_alloc_char_string(0, 0);
-  zero_length_char_immutable_string = scheme_alloc_char_string(0, 0);
-  SCHEME_SET_CHAR_STRING_IMMUTABLE(zero_length_char_immutable_string);
-  zero_length_byte_string = scheme_alloc_byte_string(0, 0);
+  REGISTER_SO(scheme_zero_length_char_string);
+  REGISTER_SO(scheme_zero_length_char_immutable_string);
+  REGISTER_SO(scheme_zero_length_byte_string);
+  scheme_zero_length_char_string = scheme_alloc_char_string(0, 0);
+  scheme_zero_length_char_immutable_string = scheme_alloc_char_string(0, 0);
+  SCHEME_SET_CHAR_STRING_IMMUTABLE(scheme_zero_length_char_immutable_string);
+  scheme_zero_length_byte_string = scheme_alloc_byte_string(0, 0);
 
   REGISTER_SO(complete_symbol);
   REGISTER_SO(continues_symbol);
@@ -320,6 +327,16 @@ scheme_init_string (Scheme_Startup_Env *env)
                                                             | SCHEME_PRIM_PRODUCES_BOOL);
   scheme_addto_prim_instance("string?", p, env);
   scheme_string_p_proc = p;
+
+  p = scheme_make_folding_prim(immutable_string_p, "immutable-string?", 1, 1, 1);
+  SCHEME_PRIM_PROC_FLAGS(p) |= scheme_intern_prim_opt_flags(SCHEME_PRIM_IS_OMITABLE
+                                                            | SCHEME_PRIM_PRODUCES_BOOL);
+  scheme_addto_prim_instance("immutable-string?", p, env);
+
+  p = scheme_make_folding_prim(mutable_string_p, "mutable-string?", 1, 1, 1);
+  SCHEME_PRIM_PROC_FLAGS(p) |= scheme_intern_prim_opt_flags(SCHEME_PRIM_IS_OMITABLE
+                                                            | SCHEME_PRIM_PRODUCES_BOOL);
+  scheme_addto_prim_instance("mutable-string?", p, env);
 
   scheme_addto_prim_instance("make-string",
 			     scheme_make_immed_prim(make_string,
@@ -528,6 +545,23 @@ scheme_init_string (Scheme_Startup_Env *env)
 						    1, 1),
 			     env);
 
+  scheme_addto_prim_instance("char-grapheme-step",
+			     scheme_make_prim_w_arity2(char_grapheme_cluster_step,
+                                                       "char-grapheme-step",
+                                                       2, 2,
+                                                       2, 2),
+			     env);
+  scheme_addto_prim_instance("string-grapheme-span",
+			     scheme_make_immed_prim(string_grapheme_cluster_span,
+						    "string-grapheme-span",
+						    2, 3),
+			     env);
+  scheme_addto_prim_instance("string-grapheme-count",
+			     scheme_make_immed_prim(string_grapheme_cluster_count,
+						    "string-grapheme-count",
+						    1, 3),
+			     env);
+
   scheme_addto_prim_instance("current-locale",
 			     scheme_register_parameter(current_locale,
 						       "current-locale",
@@ -606,6 +640,16 @@ scheme_init_string (Scheme_Startup_Env *env)
                                                             | SCHEME_PRIM_PRODUCES_BOOL);
   scheme_addto_prim_instance("bytes?", p, env);
   scheme_byte_string_p_proc = p;
+
+  p = scheme_make_folding_prim(immutable_byte_string_p, "immutable-bytes?", 1, 1, 1);
+  SCHEME_PRIM_PROC_FLAGS(p) |= scheme_intern_prim_opt_flags(SCHEME_PRIM_IS_OMITABLE
+                                                            | SCHEME_PRIM_PRODUCES_BOOL);
+  scheme_addto_prim_instance("immutable-bytes?", p, env);
+
+  p = scheme_make_folding_prim(mutable_byte_string_p, "mutable-bytes?", 1, 1, 1);
+  SCHEME_PRIM_PROC_FLAGS(p) |= scheme_intern_prim_opt_flags(SCHEME_PRIM_IS_OMITABLE
+                                                            | SCHEME_PRIM_PRODUCES_BOOL);
+  scheme_addto_prim_instance("mutable-bytes?", p, env);
 
   scheme_addto_prim_instance("make-bytes",
 			     scheme_make_immed_prim(make_byte_string,
@@ -1101,8 +1145,8 @@ Scheme_Object *string_append_immutable(int argc, Scheme_Object *argv[])
 
   r = do_string_append("string-append-immutable", argc, argv);
 
-  if (r == zero_length_char_string)
-    return zero_length_char_immutable_string;
+  if (r == scheme_zero_length_char_string)
+    return scheme_zero_length_char_immutable_string;
 
   SCHEME_SET_CHAR_STRING_IMMUTABLE(r);
 
@@ -2400,8 +2444,6 @@ void scheme_set_cross_compile_mode(int v)
   cross_compile_mode = v;
 }
 
-static void machine_details(char *s);
-
 #include "systype.inc"
 
 static Scheme_Object *system_type(int argc, Scheme_Object *argv[])
@@ -2412,11 +2454,14 @@ static Scheme_Object *system_type(int argc, Scheme_Object *argv[])
     }
 
     if (SAME_OBJ(argv[0], machine_symbol)) {
-      char buff[1024];
-      
-      machine_details(buff);
-    
-      return scheme_make_utf8_string(buff);
+      char *s;
+      Scheme_Object *str;
+
+      s = rktio_uname(scheme_rktio);
+      str = scheme_make_locale_string(s);
+      rktio_free(s);
+
+      return str;
     }
 
     if (SAME_OBJ(argv[0], gc_symbol)) {
@@ -3429,9 +3474,198 @@ string_locale_downcase(int argc, Scheme_Object *argv[])
   return unicode_recase("string-locale-downcase", 0, argc, argv);
 }
 
+int scheme_grapheme_cluster_step(mzchar c, int *_state) {
+  /* We encode the state of finding cluster boundaries as a fixnum,
+     where the low bits are the previous character's grapheme-break
+     property plus one, and the high bits are the state for
+     Extended_Pictographic matching. A 0 state is treated as a
+     previous property that doesn't match anything (and that's why
+     we add one to the previous character's property otherwise).
+     Use 0 for the state for the start of a sequence.
+    
+     The result of taking a step is two values:
+       * a boolean indicating whether an cluster end was found
+       * a new state
+     The result state is 0 only if the character sent in is consumed
+     as part of a cluster (in which case the first result will be #t).
+     Otherwise, a true first result indicates that a boundary was
+     found just before the provided character (and the provided character's
+     grapheme end is still pending).
+    
+     So, if you get to the end of a string with a non-0 state, then
+     "flush" the state by consuming that last grapheme cluster. */
+
+  int old_state = *_state;
+  int prev = (int)((old_state - 1) & ((1 << (MZ_GRAPHBREAK_BITS+1))-1));
+  int ext_pict = (int)((old_state) >> (MZ_GRAPHBREAK_BITS+1));
+  int prop;
+
+  prop = scheme_grapheme_cluster_break(c);
+
+#define MZ_GRAPHBREAK_EXTENDED_PICTOGRAPHIC MZ_GRAPHBREAK_COUNT  
+#define MZG_PROP_STATE() (prop+1)
+#define MZG_NEXT_STATE() ((prop+1) | (scheme_isextpict(c) \
+                                      ? (MZ_GRAPHBREAK_EXTENDED_PICTOGRAPHIC << (MZ_GRAPHBREAK_BITS+1)) \
+                                      : 0))
+  
+  if (prev == MZ_GRAPHBREAK_CR) { /* some of GB3 and some of GB4 */
+    if (prop == MZ_GRAPHBREAK_LF)
+      *_state = 0;
+    else
+      *_state = MZG_NEXT_STATE();
+    return 1;
+  } else if (prop == MZ_GRAPHBREAK_CR) { /* some of GB3 and some of GB5 */
+    *_state = MZG_PROP_STATE();
+    return (old_state > 0);
+  } else if ((prev == MZ_GRAPHBREAK_CONTROL) || (prev == MZ_GRAPHBREAK_LF)) { /* rest of GB4 */
+    *_state = MZG_NEXT_STATE();
+    return 1;
+  } else if ((prop == MZ_GRAPHBREAK_CONTROL) || (prop == MZ_GRAPHBREAK_LF)) { /* rest of GB5 */
+    if (old_state == 0)
+      *_state = 0;
+    else
+      *_state = MZG_PROP_STATE();
+    return 1;
+  } else if ((prev == MZ_GRAPHBREAK_L)
+             && ((prop == MZ_GRAPHBREAK_L)
+                 || (prop == MZ_GRAPHBREAK_V)
+                 || (prop == MZ_GRAPHBREAK_LV)
+                 || (prop == MZ_GRAPHBREAK_LVT))) { /* GB6 */
+    *_state = MZG_PROP_STATE();
+    return 0;
+  } else if (((prev == MZ_GRAPHBREAK_LV)
+              || (prev == MZ_GRAPHBREAK_V))
+             && ((prop == MZ_GRAPHBREAK_V)
+                 || (prop == MZ_GRAPHBREAK_T))) { /* GB7 */
+    *_state = MZG_PROP_STATE();
+    return 0;
+  } else if (((prev == MZ_GRAPHBREAK_LVT)
+              || (prev == MZ_GRAPHBREAK_T))
+             && (prop == MZ_GRAPHBREAK_T)) { /* GB8 */
+    *_state = MZG_PROP_STATE();
+    return 0;
+  } else if ((prop == MZ_GRAPHBREAK_EXTEND)
+             || (prop == MZ_GRAPHBREAK_ZWJ)) { /* GB9 */
+    if ((ext_pict == MZ_GRAPHBREAK_EXTENDED_PICTOGRAPHIC)
+        || (ext_pict == MZ_GRAPHBREAK_EXTEND)) {
+      *_state = (MZG_PROP_STATE()
+                 | (prop << (MZ_GRAPHBREAK_BITS+1)));
+    } else
+      *_state = MZG_PROP_STATE();
+    return 0;
+  } else if (prop == MZ_GRAPHBREAK_SPACINGMARK) { /* GB9a */
+    *_state = MZG_PROP_STATE();
+    return 0;
+  } else if (prev == MZ_GRAPHBREAK_PREPEND) { /* GB9b */
+    *_state = MZG_NEXT_STATE();
+    return 0;
+  } else if ((ext_pict == MZ_GRAPHBREAK_ZWJ)
+             && scheme_isextpict(c)) { /* GB11 */
+    *_state = (MZG_PROP_STATE()
+               | (MZ_GRAPHBREAK_EXTENDED_PICTOGRAPHIC << (MZ_GRAPHBREAK_BITS+1)));
+    return 0;
+  } else if (prev == MZ_GRAPHBREAK_REGIONAL_INDICATOR) { /* GB12 and GB13 */
+    if (prop == MZ_GRAPHBREAK_REGIONAL_INDICATOR) {
+      *_state = (MZ_GRAPHBREAK_OTHER+1);
+      return 0;
+    } else {
+      *_state = MZG_NEXT_STATE();
+      return 1;
+    }
+  } else { /* GB999 */
+    *_state = MZG_NEXT_STATE();
+    return (old_state > 0);
+  }
+}
+
+static Scheme_Object *char_grapheme_cluster_step(int argc, Scheme_Object *argv[])
+{
+  const char *who = "char-grapheme-step";
+  int state;
+  int consumed;
+  Scheme_Object *a[2];
+  
+  if (!SCHEME_CHARP(argv[0]))
+    scheme_wrong_contract(who, "char?", 0, argc, argv);
+  if (!SCHEME_INTP(argv[1]))
+    scheme_wrong_contract(who, "fixnum?", 1, argc, argv);
+
+  state = (int)(SCHEME_INT_VAL(argv[1]));
+  
+  consumed = scheme_grapheme_cluster_step(SCHEME_CHAR_VAL(argv[0]), &state);
+
+  a[0] = (consumed ? scheme_true : scheme_false);
+  a[1] = scheme_make_integer(state);
+
+  return scheme_values(2, a);
+}
+
+intptr_t scheme_grapheme_cluster_span(const mzchar *str, intptr_t start, intptr_t finish)
+{
+  intptr_t i;
+  int state;
+  int consumed;
+  
+  if (start == finish)
+    return 0;
+
+  state = 0;
+  consumed = scheme_grapheme_cluster_step(str[start], &state);
+  if (consumed)
+    return 1;
+
+  for (i = start + 1; i < finish; i++) {
+    consumed = scheme_grapheme_cluster_step(str[i], &state);
+    if (consumed) {
+      if (state == 0)
+        return (i - start) + 1; /* CRLF, consumed both */
+      else
+        return i - start;
+    }
+  }
+
+  return i - start;
+}
+
+static Scheme_Object *string_grapheme_cluster_span(int argc, Scheme_Object *argv[])
+{
+  const char *who = "string-grapheme-span";
+  intptr_t start, finish;
+
+  if (!SCHEME_CHAR_STRINGP(argv[0]))
+    scheme_wrong_contract(who, "string?", 0, argc, argv);
+
+  scheme_do_get_substring_indices(who, argv[0], argc, argv, 1, 2,
+                                  &start, &finish, SCHEME_CHAR_STRTAG_VAL(argv[0]));
+
+  return scheme_make_integer(scheme_grapheme_cluster_span(SCHEME_CHAR_STR_VAL(argv[0]), start, finish));
+}
+
+static Scheme_Object *string_grapheme_cluster_count(int argc, Scheme_Object *argv[])
+{
+  const char *who = "string-grapheme-count";
+  intptr_t start, finish, len, count;
+  mzchar *str;
+
+  if (!SCHEME_CHAR_STRINGP(argv[0]))
+    scheme_wrong_contract(who, "string?", 0, argc, argv);
+
+  scheme_do_get_substring_indices(who, argv[0], argc, argv, 1, 2,
+                                  &start, &finish, SCHEME_CHAR_STRTAG_VAL(argv[0]));
+
+  str = SCHEME_CHAR_STR_VAL(argv[0]);
+
+  for (count = 0; start < finish; start += len, count++) {
+    len = scheme_grapheme_cluster_span(str, start, finish);
+  }
+
+  return scheme_make_integer(count);
+}
+
 static void reset_locale(void)
 {
   Scheme_Object *v;
+  intptr_t start, finish;
   const mzchar *name;
 
   /* This function needs to work before threads are set up: */
@@ -3782,7 +4016,7 @@ XFORM_NONGCING mzchar get_canon_decomposition(mzchar key, mzchar *b)
   }
 }
 
-XFORM_NONGCING int get_kompat_decomposition(mzchar key, unsigned short **chars)
+XFORM_NONGCING int get_kompat_decomposition(mzchar key, unsigned int **chars)
 {
   int pos = (KOMPAT_DECOMPOSE_TABLE_SIZE >> 1), new_pos;
   int below_len = pos;
@@ -3909,7 +4143,7 @@ static Scheme_Object *normalize_d(Scheme_Object *o, int kompat)
     if (scheme_needs_decompose(s[i])) {
       int klen;
       mzchar snd;
-      GC_CAN_IGNORE unsigned short *start;
+      GC_CAN_IGNORE unsigned int *start;
 
       tmp = s[i];
       while (scheme_needs_decompose(tmp)) {
@@ -3953,7 +4187,7 @@ static Scheme_Object *normalize_d(Scheme_Object *o, int kompat)
     if (scheme_needs_decompose(s[i])) {
       mzchar snd, tmp2;
       int snds = 0, klen = 0, k;
-      GC_CAN_IGNORE unsigned short*start;
+      GC_CAN_IGNORE unsigned int *start;
 
       tmp = s[i];
       while (scheme_needs_decompose(tmp)) {
@@ -4058,6 +4292,10 @@ static Scheme_Object *do_string_normalize_c (const char *who, int argc, Scheme_O
 	&& scheme_combining_class(s[i+1])
 	&& (scheme_combining_class(s[i+1]) < scheme_combining_class(s[i]))) {
       /* Need to reorder */
+      break;
+    } else if ((s[i] >= MZ_JAMO_SYLLABLE_START)
+               && (s[i] <= MZ_JAMO_SYLLABLE_END)) {
+      /* Need Hangul decomposition */
       break;
     } else if ((s[i] >= MZ_JAMO_INITIAL_CONSONANT_START)
 	       && (s[i] <= MZ_JAMO_INITIAL_CONSONANT_END)
@@ -5190,7 +5428,7 @@ mzchar *scheme_utf8_decode_to_buffer(const unsigned char *s, intptr_t len,
 intptr_t scheme_utf8_decode_count(const unsigned char *s, intptr_t start, intptr_t end,
 			     int *_state, int might_continue, int permissive)
 {
-  intptr_t pos = 0;
+  intptr_t pos = 0, r;
 
   if (!_state || !*_state) {
     /* Try fast path (all ASCII): */
@@ -5476,147 +5714,6 @@ mzchar *scheme_utf16_to_ucs4(const unsigned short *text, intptr_t start, intptr_
 
   return buf;
 }
-
-/**********************************************************************/
-/*                     machine type details                           */
-/**********************************************************************/
-
-/*************************** Windows **********************************/
-
-#ifdef DOS_FILE_SYSTEM
-# include <windows.h>
-void machine_details(char *buff)
-{
-  OSVERSIONINFO info;
-  BOOL hasInfo;
-  char *p;
-
-  info.dwOSVersionInfoSize = sizeof(info);
-
-  GetVersionEx(&info);
-
-  hasInfo = FALSE;
-
-  p = info.szCSDVersion;
-
-  while (p < info.szCSDVersion + sizeof(info.szCSDVersion) &&
-	 *p) {
-    if (*p != ' ') {
-      hasInfo = TRUE;
-      break;
-    }
-    p = p XFORM_OK_PLUS 1;
-  }
-
-  sprintf(buff,"Windows %s %ld.%ld (Build %ld)%s%s",
-	  (info.dwPlatformId == VER_PLATFORM_WIN32_WINDOWS) ?
-	  "9x" :
-	  (info.dwPlatformId == VER_PLATFORM_WIN32_NT) ?
-	  "NT" : "Unknown platform",
-	  info.dwMajorVersion,info.dwMinorVersion,
-	  (info.dwPlatformId == VER_PLATFORM_WIN32_NT) ?
-	  info.dwBuildNumber :
-	  info.dwBuildNumber & 0xFFFF,
-	  hasInfo ? " " : "",hasInfo ? info.szCSDVersion : "");
-}
-#endif
-
-/***************************** Unix ***********************************/
-
-#if !defined(DOS_FILE_SYSTEM)
-READ_ONLY static char *uname_locations[] = { "/bin/uname",
-				   "/usr/bin/uname",
-				   /* The above should cover everything, but
-				      just in case... */
-				   "/sbin/uname",
-				   "/usr/sbin/uname",
-				   "/usr/local/bin/uname",
-				   "/usr/local/uname",
-				   NULL };
-
-static int try_subproc(Scheme_Object *subprocess_proc, char *prog)
-{
-  Scheme_Object *a[5];
-  mz_jmp_buf * volatile savebuf, newbuf;
-
-  savebuf = scheme_current_thread->error_buf;
-  scheme_current_thread->error_buf = &newbuf;
-
-  if (!scheme_setjmp(newbuf)) {
-    a[0] = scheme_false;
-    a[1] = scheme_false;
-    a[2] = scheme_false;
-    a[3] = scheme_make_locale_string(prog);
-    a[4] = scheme_make_locale_string("-a");
-    _scheme_apply_multi(subprocess_proc, 5, a);
-    scheme_current_thread->error_buf = savebuf;
-    return 1;
-  } else {
-    scheme_clear_escape();
-    scheme_current_thread->error_buf = savebuf;
-    return 0;
-  }
-}
-
-void machine_details(char *buff)
-{
-  Scheme_Object *subprocess_proc;
-  int i;
-  Scheme_Config *config;
-  Scheme_Security_Guard *sg;
-  Scheme_Cont_Frame_Data cframe;
- 
-  /* Use the root security guard so we can test for and run
-     executables. */
-  config = scheme_current_config();
-  sg = (Scheme_Security_Guard *)scheme_get_param(config, MZCONFIG_SECURITY_GUARD);
-  while (sg->parent) { sg = sg->parent; }
-  config = scheme_extend_config(config, MZCONFIG_SECURITY_GUARD, (Scheme_Object *)sg);
-
-  scheme_push_continuation_frame(&cframe);
-  scheme_install_config(config);
-
-  subprocess_proc = scheme_builtin_value("subprocess");
-
-  for (i = 0; uname_locations[i]; i++) {
-    if (scheme_file_exists(uname_locations[i])) {
-      /* Try running it. */
-      if (try_subproc(subprocess_proc, uname_locations[i])) {
-	Scheme_Object *sout, *sin, *serr;
-	intptr_t c;
-
-	sout = scheme_current_thread->ku.multiple.array[1];
-	sin = scheme_current_thread->ku.multiple.array[2];
-	serr = scheme_current_thread->ku.multiple.array[3];
-
-	scheme_close_output_port(sin);
-	scheme_close_input_port(serr);
-
-	/* Read result: */
-	strcpy(buff, "<unknown machine>");
-	c = scheme_get_bytes(sout, 1023, buff, 0);
-	buff[c] = 0;
-
-	scheme_close_input_port(sout);
-
-	/* Remove trailing whitespace (especially newlines) */
-	while (c && portable_isspace(((unsigned char *)buff)[c - 1])) {
-	  buff[--c] = 0;
-	}
-
-        scheme_pop_continuation_frame(&cframe);
-
-	return;
-      }
-    }
-  }
-
-  strcpy(buff, "<unknown machine>");
-
-  scheme_pop_continuation_frame(&cframe);
-}
-#endif
-
 
 /**********************************************************************/
 /*                           Precise GC                               */

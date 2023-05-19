@@ -2,7 +2,9 @@
 
 (require (for-syntax scheme/base)
          "match-tests.rkt" "match-exn-tests.rkt" "other-plt-tests.rkt" "other-tests.rkt"
+         "legacy-match-tests.rkt"
          "examples.rkt"
+         "case-tests.rkt"
          rackunit rackunit/text-ui
          (only-in racket/base local-require))
 
@@ -240,7 +242,18 @@
               (parameterize ([match-equality-test eq?])
                 (check = 5 (match '((3) (3)) [(list a a) a] [_ 5]))))
    (test-case "Nonlinear patterns use equal?"
-              (check equal? '(3) (match '((3) (3)) [(list a a) a] [_ 5])))))
+              (check equal? '(3) (match '((3) (3)) [(list a a) a] [_ 5])))
+   (test-case "Nonlinear patterns under ellipses"
+     (check-equal? (match '((1 1) (2 2) (3 3))
+                     [(list (list a a) ...) a]
+                     [_ #f])
+                   '(1 2 3))
+     (check-false (match '((1 1) (2 3) (3 3))
+                    [(list (list a a) ...) a]
+                    [_ #f]))
+     (check-equal? (match '((1 1 2 3) (2 1 2 3) (3 1 2 3))
+                     [(list (cons a (list pre ... a post ...)) ...) (list a pre post)])
+                   '((1 2 3) (() (1) (1 2)) ((2 3) (3) ()))))))
 
 
 (define doc-tests
@@ -304,6 +317,25 @@
 (module test-struct*-struct-info racket/base
   (struct foo (a))
   (provide (rename-out [foo bar])))
+
+(module test-struct*-no-struct-field-info racket/base
+  (provide bar)
+  (require (for-syntax racket/struct-info
+                       racket/base))
+  (define (bar-car x) (car x))
+  (define (bar-cdr x) (cdr x))
+  (define (bar? x) (pair? x))
+
+  (struct foo ())
+
+  (define-syntax bar
+    (make-struct-info
+     (λ () (list #f
+                 #'cons
+                 #'bar?
+                 (list #'bar-cdr #'bar-car)
+                 (list #f #f)
+                 #'foo)))))
 
 (define struct*-tests
   (test-suite 
@@ -403,7 +435,13 @@
                 (match-define
                   (struct* bar ([a x]))
                   (bar 1))
-                (check = x 1)))))
+                (check = x 1)))
+
+   (test-case "without struct-field-info"
+     (let ()
+       (local-require 'test-struct*-no-struct-field-info)
+       (match-define (struct* bar ([car x])) (list 1 2 3))
+       (check = x 1)))))
 
 (define plt-match-tests
   (test-suite "Tests for plt-match.rkt"
@@ -420,11 +458,16 @@
                             plt-match-tests
                             match-tests
                             match-exn-tests
+                            legacy-match-tests
                             new-tests
                             ;; from bruce
                             other-tests 
-                            other-plt-tests)
+                            other-plt-tests
+                            case-tests)
              'verbose))
 
-(unless (= 0 (run-all-tests))
-  (error "Match Tests did not pass."))
+(module+ main
+  (unless (= 0 (run-all-tests))
+    (error "Match Tests did not pass.")))
+(module+ test
+  (run-all-tests))

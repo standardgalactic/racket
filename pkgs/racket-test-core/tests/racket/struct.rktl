@@ -7,7 +7,9 @@
 	     [(prop:p2 p2? p2-ref) (make-struct-type-property 'prop2)]
 	     [(insp1) (make-inspector)]
 	     [(insp2) (make-inspector)])
-  (arity-test make-struct-type-property 1 4)
+  (test 'prop-accessor object-name p-ref)
+  (test 'racket procedure-realm p-ref)
+  (arity-test make-struct-type-property 1 7)
   (arity-test struct-type-property-accessor-procedure? 1 1)
   (arity-test struct-type-property-predicate-procedure? 1 2)
   (test 3 primitive-result-arity make-struct-type-property)
@@ -70,6 +72,16 @@
       (test #f struct-accessor-procedure? set1)
       (err/rt-test (make-struct-field-accessor sel 3) exn:application:mismatch?)
       (test 'make-a object-name (struct-type-make-constructor type))
+      (test 'a-field2 object-name sel2)
+      (test 'racket procedure-realm sel2)
+      (test 'set-a-field2! object-name set2)
+      (test 'racket procedure-realm set2)
+      (let ([sel2x (make-struct-field-accessor sel 2 'x)]
+            [set2x (make-struct-field-mutator set 2 'x)])
+        (test 'a-x object-name sel2x)
+        (test 'racket procedure-realm sel2x)
+        (test 'set-a-x! object-name set2x)
+        (test 'racket procedure-realm set2x))
       (let ([new-ctor (struct-type-make-constructor type 'some-other-name)])
         (test 'some-other-name object-name new-ctor)
         (test #t struct-constructor-procedure? new-ctor))
@@ -491,12 +503,21 @@
 
 (struct-syntax-test 'define-struct)
 
+;; test using the transformer binding incorrectly
+(syntax-test #'(let ()
+                 (define-struct a ())
+                 (a . b)))
+
 (syntax-test #'(define-struct a (b c) #:transparent #:inspector #f))
 (syntax-test #'(define-struct a (b c) #:transparent #:prefab))
 (syntax-test #'(define-struct a (b c) #:prefab #:guard 10))
 (syntax-test #'(define-struct a (b c) #:prefab #:property 1 10))
 (syntax-test #'(define-struct a (b c) #:guard 10 #:prefab))
 (syntax-test #'(define-struct a (b c) #:property 1 10 #:prefab))
+(syntax-test #'(define-struct a (b c) #:sealed #:prefab))
+(syntax-test #'(define-struct a (b c) #:prefab #:sealed))
+(syntax-test #'(define-struct a (b c) #:prefab #:authentic))
+(syntax-test #'(define-struct a (b c) #:authentic #:prefab))
 
 (define-struct base0 ())
 (define-struct base1 (a))
@@ -842,6 +863,60 @@
 
 (err/rt-test (make-struct-type 'bad struct:date 2 0 #f null 'prefab))
 
+(test 'v prefab-struct-key #s(v one))
+(test '(v w 2) prefab-struct-key #s((v w 2) one two three))
+(test #f prefab-struct-key "apple")
+(test #f prefab-struct-key 10)
+
+(let ()
+  (define-struct t (a b) #:prefab)
+  (define-struct t2 (a b))
+  (define-struct (t3 t) (c) #:prefab)
+  (test '(t . 2) prefab-struct-type-key+field-count struct:t)
+  (test #f prefab-struct-type-key+field-count struct:t2)
+  (test '((t3 t 2) . 3) prefab-struct-type-key+field-count struct:t3))
+
+;; ------------------------------------------------------------
+;; Sealed
+
+(err/rt-test (let ()
+               (struct x () #:sealed)
+               (struct y x ())
+               (y))
+             exn:fail:contract?
+             "make-struct-type: cannot make a subtype of a sealed type")
+
+(err/rt-test (let ()
+               (struct x () #:sealed)
+               (struct y x () #:sealed)
+               (y))
+             exn:fail:contract?
+             "make-struct-type: cannot make a subtype of a sealed type")
+
+(err/rt-test (let ()
+               (define-values (prop:s s? s-ref)
+                 (make-struct-type-property 's #f (list (cons prop:sealed (lambda (x) #t)))))
+               (struct x () #:property prop:s #t)
+               (struct y x ())
+               (y))
+             exn:fail:contract?
+             "make-struct-type: cannot make a subtype of a sealed type")
+
+(test '(#f #t) cdr (let ()
+                     (struct x ())
+                     (struct y x () #:sealed)
+                     (list (y)
+                           (struct-type-sealed? struct:x)
+                           (struct-type-sealed? struct:y))))
+
+(err/rt-test (let ()
+               (struct x ())
+               (struct y x () #:sealed)
+               (struct z y ())
+               (y))
+             exn:fail:contract?
+             "make-struct-type: cannot make a subtype of a sealed type")
+
 ;; ------------------------------------------------------------
 ;; Misc. built-in structures
 
@@ -950,7 +1025,13 @@
 
   (test #f equal? (make-t1 0 1) (make-t2 0 1))
   (test #t equal? (make-t1 0 1) (make-t1 0 1))
+  (test #t equal-always? (make-t1 0 1) (make-t1 0 1))
   (test #t equal? (make-t2 0 1) (make-t2 0 1))
+  (test #f equal-always? (make-t2 0 1) (make-t2 0 1))
+  (test #f chaperone-of? (make-t2 0 1) (make-t2 0 1))
+  (test #t impersonator-of? (make-t2 0 1) (make-t2 0 1))
+  (let ([t (make-t2 0 1)])
+    (test #t equal-always? t t))
   (test #t equal? 
         (shared ([t (make-t2 0 t)]) t) 
         (shared ([t (make-t2 0 t)]) t))
@@ -960,6 +1041,10 @@
   (test #t = 
         (equal-hash-code (make-t1 0 1))
         (equal-hash-code (make-t1 0 1)))
+  (let ([t (make-t1 0 1)])
+    (test #t = 
+          (equal-always-hash-code t)
+          (equal-always-hash-code t)))
   (test #t =
         (equal-hash-code (shared ([t (make-t2 0 t)]) t))
         (equal-hash-code (shared ([t (make-t2 0 t)]) t)))
@@ -971,6 +1056,7 @@
         (equal-secondary-hash-code (shared ([t (make-t2 0 t)]) t)))
   
   (test #t equal? (make-o 1 2 3) (make-o 1 20 3))
+  (test #f equal-always? (make-o 1 2 3) (make-o 1 20 3))
   (test #f equal? (make-o 10 2 3) (make-o 1 2 3))
   (test #f equal? (make-o 1 2 3) (make-o 1 2 30))
   (test #t equal? 
@@ -986,6 +1072,10 @@
   (test #t = 
         (equal-hash-code (make-o 1 2 3))
         (equal-hash-code (make-o 1 20 3)))
+  (let ([t (make-o 1 2 3)])
+    (test #t =
+          (equal-always-hash-code t)
+          (equal-always-hash-code t)))
   (test #t =
         (equal-hash-code (shared ([t (make-o t 0 t)]) t))
         (equal-hash-code (shared ([t (make-o t 0 t)]) t)))
@@ -998,6 +1088,66 @@
   (test #t =
         (equal-secondary-hash-code (shared ([t (make-o t 1 t)]) t))
         (equal-secondary-hash-code (shared ([t (make-o t 1 t)]) t)))
+
+  (void))
+
+(let ([was-always? #f])
+  (test 'new-protocol car '(new-protocol))
+  ;; new `prop:equal+hash` that more fully supports `equal-always?`
+  (define-struct o (x y z)
+    #:property prop:equal+hash (list
+                                (lambda (a b equal? now?)
+                                  (set! was-always? (not now?))
+                                  (and (equal? (o-x a) (o-x b))
+                                       (equal? (o-z a) (o-z b))))
+                                (lambda (a hash now?)
+                                  (set! was-always? (not now?))
+                                  (+ (hash (o-x a)) (* 9 (hash (o-z a))))))
+    #:mutable)
+
+  (test #t equal? (make-o 1 2 3) (make-o 1 20 3))
+  (test #f equal? (make-o 1 2 3) (make-o 1 20 30))
+  (test #f values was-always?)
+  (test #t equal-always? (make-o 1 2 3) (make-o 1 20 3))
+  (test #f equal-always? (make-o 1 2 3) (make-o 1 20 30))
+  (test #t values was-always?)
+  (test #t impersonator-of? (make-o 1 2 3) (make-o 1 20 3))
+  (test #f impersonator-of? (make-o 1 2 3) (make-o 1 20 30))
+  (test #f values was-always?)
+  (test #t chaperone-of? (make-o 1 2 3) (make-o 1 20 3))
+  (test #f chaperone-of? (make-o 1 2 3) (make-o 1 20 30))
+  (test #t values was-always?)
+
+  (test #t equal?
+        (shared ([t (make-o t 0 0)]) t) 
+        (shared ([t (make-o t 0 0)]) t))
+  (test #f equal?
+        (shared ([t (make-o t 0 0)]) t) 
+        (shared ([t (make-o t 0 1)]) t))
+  (test #t equal-always?
+        (shared ([t (make-o t 0 0)]) t) 
+        (shared ([t (make-o t 0 0)]) t))
+  (test #f equal-always?
+        (shared ([t (make-o t 0 0)]) t) 
+        (shared ([t (make-o t 0 1)]) t))
+
+  (test #t = (equal-hash-code (make-o 1 2 3)) (equal-hash-code (make-o 1 20 3)))
+  (test #f values was-always?)
+  (test #t = (equal-always-hash-code (make-o 1 2 3)) (equal-always-hash-code (make-o 1 20 3)))
+  (test #t values was-always?)
+  (test #t =
+        (equal-hash-code (shared ([t (make-o 0 0 t)]) t))
+        (equal-hash-code (shared ([t (make-o 0 0 t)]) t)))
+  (test #t =
+        (equal-always-hash-code (shared ([t (make-o 0 0 t)]) t))
+        (equal-always-hash-code (shared ([t (make-o 0 0 t)]) t)))
+  
+  (test #t = 
+        (equal-secondary-hash-code (make-o 0 1 3))
+        (equal-secondary-hash-code (make-o 0 10 3)))
+  (test #t =
+        (equal-secondary-hash-code (shared ([t (make-o 0 1 t)]) t))
+        (equal-secondary-hash-code (shared ([t (make-o 0 2 t)]) t)))
 
   (void))
 
@@ -1090,7 +1240,7 @@
 
 ;; ----------------------------------------
 
-(require (for-syntax scheme/struct-info))
+(require (for-syntax racket/struct-info))
 
 (let ()
   (define-struct a (x y))
@@ -1195,6 +1345,29 @@
   (local-require 'test-struct-parent)
   (struct a-b a (d) #:transparent)
   (syntax-test #'(struct-copy a-b (a-b 1 2) [c 10])))
+
+(module test-struct-copy-no-struct-field-info racket/base
+  (provide bar)
+  (require (for-syntax racket/struct-info
+                       racket/base))
+  (define (bar-car x) (car x))
+  (define (bar-cdr x) (cdr x))
+  (define (bar? x) (pair? x))
+
+  (struct foo ())
+
+  (define-syntax bar
+    (make-struct-info
+     (λ () (list #f
+                 #'cons
+                 #'bar?
+                 (list #'bar-cdr #'bar-car)
+                 (list #f #f)
+                 #'foo)))))
+
+(let ()
+  (local-require 'test-struct-copy-no-struct-field-info)
+  (test (cons 3 2) 'struct-copy1 (struct-copy bar (cons 1 2) [car 3])))
 
 (test #t prefab-key? 'apple)
 (test #f prefab-key? '#(apple))
@@ -1302,6 +1475,7 @@
 (let ()
   (struct posn (x y) #:authentic)
   (test 1 posn-x (posn 1 2))
+  (test #t struct-type-authentic? struct:posn)
   (err/rt-test (chaperone-struct (posn 1 2) posn-x (lambda (p x) x)))
 
   ;; Subtype must be consistent:
@@ -1311,6 +1485,7 @@
 
 (let ()
   (struct posn (x y))
+  (test #f struct-type-authentic? struct:posn)
 
   ;; Subtype must be consistent:
   (err/rt-test (let ()
@@ -1539,6 +1714,212 @@
 (let ()
   (struct exn:foo exn () #:constructor-name make-exn:foo)
   (test "foo" exn-message (make-exn:foo "foo" (current-continuation-marks))))
+
+(let ()
+  (struct foo (x) #:constructor-name Foo #:name Foo)
+  (test #t foo? (Foo 1))
+  (test 1 foo-x (Foo 1))
+  (test #t foo? (let-syntax ([mk (lambda (stx)
+                                   #`(#,(cadr (extract-struct-info (syntax-local-value #'Foo))) 1))])
+                  (mk))))
+
+;; ----------------------------------------
+
+(err/rt-test
+ (let ()
+   (struct x ())
+   (define unknown struct:x)
+   (set! unknown unknown)
+
+   (define-values (struct:y y y? y-z)
+     (let-values ([(struct:_1 make-_2 ?_3 -ref_4 -set!_5)
+                   (let-values ()
+                     (let-values ()
+                       (make-struct-type 'y unknown 1 0 #f
+                                         (list)
+                                         'prefab ; (current-inspector)
+                                         #f '() #f 'y)))])
+       (values
+        struct:_1
+        make-_2
+        ?_3
+        (make-struct-field-accessor -ref_4 0 'z))))
+
+   'done)
+ exn:fail:contract?
+ "generative supertype disallowed for non-generative structure type")
+
+(err/rt-test
+ (let ()
+   ;; Should be arity error (as opposed to a crash)
+   (define-values (struct:y y y? y-z)
+     (let-values ([(struct:_1 make-_2 ?_3 -ref_4 -set!_5)
+                   (let-values ()
+                     (let-values ()
+                       (make-struct-type 'y #f 1 0 #f
+                                         (list)
+                                         (current-inspector)
+                                         #f '() #f 'y 'extra)))])
+       (values
+        struct:_1
+        make-_2
+        ?_3
+        (make-struct-field-accessor -ref_4 0 'z))))
+   5))
+
+;; ----------------------------------------
+;; names and realms
+
+(let ()
+  (define-values (struct:cat make-cat cat? cat-ref cat-set!)
+    (make-struct-type 'cat #f 2 2 'auto))
+  (define c1 (make-cat 1 2))
+  (define cat-paw1 (make-struct-field-accessor cat-ref 0 'cat-paw1 "gato?" 'elsewhere))
+  (define set-cat-paw1! (make-struct-field-mutator cat-set! 0 'set-cat-paw1! "gato!?" 'elsewhere!))
+  (define cat-paw4 (make-struct-field-accessor cat-ref 3 'cat-paw4 "gato?" 'elsewhere))
+  (define set-cat-paw4! (make-struct-field-mutator cat-set! 3 'set-cat-paw4! "gato!?" 'elsewhere!))
+  (test 'cat-paw1 object-name cat-paw1)
+  (test 'elsewhere procedure-realm cat-paw1)
+  (test 'set-cat-paw1! object-name set-cat-paw1!)
+  (test 'elsewhere! procedure-realm set-cat-paw1!)
+  (test 'cat-paw4 object-name cat-paw4)
+  (test 'elsewhere procedure-realm cat-paw4)
+  (test 'set-cat-paw4! object-name set-cat-paw4!)
+  (test 'elsewhere! procedure-realm set-cat-paw4!)
+  (err/rt-test (cat-paw1 "apple") exn:fail:contract? #rx"cat-paw1: .*gato[?]")
+  (err/rt-test (set-cat-paw1! "apple" 0) exn:fail:contract? #rx"set-cat-paw1!: .*gato![?]")
+  (err/rt-test (cat-paw4 "apple") exn:fail:contract? #rx"cat-paw4: .*gato[?]")
+  (err/rt-test (set-cat-paw4! "apple" 0) exn:fail:contract? #rx"set-cat-paw4!: .*gato![?]")
+  (let ()
+    (define-values (struct:xcat make-xcat xcat? xcat-ref xcat-set!)
+      (make-struct-type 'cat #f 0 0))
+    (err/rt-test (cat-paw1 (make-xcat)) exn:fail:contract? #rx"cat-paw1: .*gato[?]")
+    (err/rt-test (set-cat-paw1! (make-xcat) 0) exn:fail:contract? #rx"set-cat-paw1!: .*gato![?]"))
+  (define (adjuster mode)
+    (case mode
+      [(name) (lambda (name realm)
+                (cond
+                  [(and (eq? name 'cat-paw1) (eq? realm 'elsewhere))
+                   (values 'kitty-paw-one 'here)]
+                  [(and (eq? name 'set-cat-paw1!) (eq? realm 'elsewhere!))
+                   (values 'set-kitty-paw-one! 'here)]
+                  [else (values name realm)]))]
+      [(contract) (lambda (ctc realm)
+                    (cond
+                      [(and (equal? ctc "gato?") (eq? realm 'elsewhere))
+                       (values "is-kitty?" 'here)]
+                      [(and (equal? ctc "gato!?") (eq? realm 'elsewhere!))
+                       (values "is-kitty!?" 'here)]
+                      [else (values ctc realm)]))]
+      [else #f]))
+  (err/rt-test (with-continuation-mark
+                error-message-adjuster-key adjuster
+                (cat-paw1 "apple"))
+               exn:fail:contract?
+               #rx"kitty-paw-one: .*is-kitty[?]")
+  (err/rt-test (with-continuation-mark
+                error-message-adjuster-key adjuster
+                (set-cat-paw1! "apple" 0))
+               exn:fail:contract?
+               #rx"set-kitty-paw-one!: .*is-kitty![?]")
+  (let ()
+    (define-values (struct:xcat make-xcat xcat? xcat-ref xcat-set!)
+      (make-struct-type 'cat #f 0 0))
+    (err/rt-test (with-continuation-mark
+                  error-message-adjuster-key adjuster
+                  (cat-paw1 (make-xcat)))
+                 exn:fail:contract?
+                 #rx"kitty-paw-one: .*is-kitty[?]")
+    (err/rt-test (with-continuation-mark
+                  error-message-adjuster-key adjuster
+                  (set-cat-paw1! (make-xcat) 0))
+                 exn:fail:contract?
+                 #rx"set-kitty-paw-one!: .*is-kitty![?]"))
+  (void))
+
+(let ()
+  (define-values (prop:animal animal? animal-ref)
+    (make-struct-type-property 'animal
+                               #f
+                               null
+                               #t
+                               'animal-get
+                               "is-animal?"
+                               'elsewhere))
+  (test 'animal-get object-name animal-ref)
+  (test 'elsewhere procedure-realm animal-ref)
+  (err/rt-test (animal-ref 10) exn:fail:contract?
+               #rx"animal-get: .*is-animal[?]"))
+
+(let ()
+  (struct a (b) #:authentic #:mutable)
+  (err/rt-test (a-b 1) exn:fail:contract? #rx"^a-b:")
+  (err/rt-test (set-a-b! 1 #f) exn:fail:contract? #rx"^set-a-b!:"))
+
+;; ----------------------------------------
+;; make sure `prop:object-name` works with applicables
+
+(let ()
+  (struct x ()
+    #:property prop:object-name
+    (let ()
+      (struct p ()
+        #:property prop:procedure (lambda (self v) 'x))
+      (p)))
+  (test 'x object-name (x)))
+
+;; ----------------------------------------
+;; make sure `prop:object-name` is not used to try to get a name
+;; for the structure type itself
+
+(let ([asked? #f])
+  (struct x ()
+    #:property prop:object-name (lambda (self) (set! asked? #t) "NAME"))
+
+  (test #f values asked?)
+  (test 'x object-name struct:x)
+  (test #f values asked?)
+  (test "#<struct-type:x>" format "~a" struct:x)
+  (test #f values asked?)
+
+  (test "NAME" object-name (x))
+  (test #t values asked?))
+
+;; ----------------------------------------
+;; Check that a property guard always gets a super structure type
+
+(let ()
+  (define-values (prop has-prop? prop-ref)
+    (make-struct-type-property
+     'prop
+     (lambda (v info)
+       (test (if (eq? (car info) 'a)
+                 #f
+                 struct:a)
+             values
+             (list-ref info 6))
+       v)))
+  (struct a (x) #:property prop 1)
+  (struct b a (y) #:property prop 2)
+  (void))
+
+;; ----------------------------------------
+;; Regression test related to constant-folding optimization
+
+(let ([c (compile '(module m racket/base
+                     (struct? #s(a 1))))])
+  (define o (open-output-bytes))
+  (write c o)
+  (test #t 'compiled (compiled-module-expression? (parameterize ([read-accept-compiled #t])
+                                                    (read (open-input-bytes (get-output-bytes o)))))))
+
+(let ([c (compile (prefab-key->struct-type 'something 10))])
+  (define o (open-output-bytes))
+  (write c o)
+  (test (prefab-key->struct-type 'something 10)
+        values
+        (eval (parameterize ([read-accept-compiled #t])
+                (read (open-input-bytes (get-output-bytes o)))))))
 
 ;; ----------------------------------------
 

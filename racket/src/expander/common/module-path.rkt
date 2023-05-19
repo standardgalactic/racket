@@ -13,12 +13,13 @@
          resolved-module-path?
          make-resolved-module-path
          resolved-module-path-name
+         safe-resolved-module-path-name
          resolved-module-path-root-name
          resolved-module-path->module-path
          
          module-path-index?
          module-path-index-resolve
-         module-path-index-unresolve
+         module-path-index-fresh
          module-path-index-join
          module-path-index-split
          module-path-index-submodule
@@ -96,6 +97,16 @@
           base
           (apply string-append (for/list ([i (in-list syms)])
                                  (format " ~s" i)))))
+
+(define safe-resolved-module-path-name
+  (let ([resolved-module-path-name
+         (lambda (v)
+           (unless (resolved-module-path? v)
+             (raise-argument-error 'resolved-module-path-name
+                                   "resolved-module-path?"
+                                   v))
+           (resolved-module-path-name v))])
+    resolved-module-path-name))
 
 (define (resolved-module-path-root-name r)
   (define name (resolved-module-path-name r))
@@ -201,31 +212,34 @@
     [(name) (make-self-module-path-index (make-resolved-module-path name))]
     [() top-level-module-path-index]))
 
-(define/who (module-path-index-resolve mpi [load? #f])
+(define/who (module-path-index-resolve mpi [load? #f] [stx #f])
   (check who module-path-index? mpi)
   (or (module-path-index-resolved mpi)
-      (let ([mod-name (performance-region
-                       ['eval 'resolver]
-                       ((current-module-name-resolver)
-                        (module-path-index-path mpi)
-                        (module-path-index-resolve/maybe
-                         (module-path-index-base mpi)
-                         load?)
-                        #f
-                        load?))])
-        (unless (resolved-module-path? mod-name)
-          (raise-arguments-error 'module-path-index-resolve
-                                 "current module name resolver's result is not a resolved module path"
-                                 "result" mod-name))
-        (set-module-path-index-resolved! mpi mod-name)
-        mod-name)))
+      (cond
+        [(module-path-index-path mpi)
+         (let ([mod-name (performance-region
+                          ['eval 'resolver]
+                          ((current-module-name-resolver)
+                           (module-path-index-path mpi)
+                           (module-path-index-resolve/maybe
+                            (module-path-index-base mpi)
+                            load?)
+                           stx
+                           load?))])
+           (unless (resolved-module-path? mod-name)
+             (raise-arguments-error 'module-path-index-resolve
+                                    "current module name resolver's result is not a resolved module path"
+                                    "result" mod-name))
+           (set-module-path-index-resolved! mpi mod-name)
+           mod-name)]
+        [else
+         (raise-arguments-error who
+                                "\"self\" index has no resolution"
+                                "module path index" mpi)])))
 
-(define (module-path-index-unresolve mpi)
-  (cond
-   [(module-path-index-resolved mpi)
-    (define-values (path base) (module-path-index-split mpi))
-    (module-path-index-join path base)]
-   [else mpi]))
+(define (module-path-index-fresh mpi)
+  (define-values (path base) (module-path-index-split mpi))
+  (module-path-index-join path base))
 
 (define/who (module-path-index-join mod-path base [submod #f])
   (check who #:or-false module-path? mod-path)

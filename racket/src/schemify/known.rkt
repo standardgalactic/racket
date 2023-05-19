@@ -13,29 +13,32 @@
          known-procedure/no-prompt known-procedure/no-prompt?
          known-procedure/no-prompt/multi known-procedure/no-prompt/multi?
          known-procedure/no-return known-procedure/no-return?
+         known-procedure/parameter known-procedure/parameter?
          known-procedure/folding known-procedure/folding?
          known-procedure/folding/limited known-procedure/folding/limited? known-procedure/folding/limited-kind
          known-procedure/can-inline known-procedure/can-inline? known-procedure/can-inline-expr
          known-procedure/can-inline/need-imports known-procedure/can-inline/need-imports?
          known-procedure/can-inline/need-imports-needed
          known-procedure/succeeds known-procedure/succeeds?
+         known-procedure/then-pure known-procedure/then-pure?
+         known-procedure/then-pure/folding-unsafe known-procedure/then-pure/folding-unsafe?
+         known-procedure/then-pure/folding-unsafe-safe
          known-procedure/allocates known-procedure/allocates?
          known-procedure/pure known-procedure/pure?
          known-procedure/pure/folding known-procedure/pure/folding? ; not a subtype of `known-procedure/folding`
-         known-procedure/pure/folding-unsafe known-procedure/pure/folding-unsafe?
-         known-procedure/pure/folding-unsafe-safe
          known-procedure/has-unsafe known-procedure/has-unsafe? known-procedure/has-unsafe-alternate
          known-procedure/has-unsafe/folding known-procedure/has-unsafe/folding?  ; not a subtype of `known-procedure/folding`
          known-procedure/has-unsafe/folding/limited known-procedure/has-unsafe/folding/limited?
          known-procedure/has-unsafe/folding/limited-kind
          known-struct-type known-struct-type? known-struct-type-type
-         known-struct-type-field-count known-struct-type-pure-constructor?
+         known-struct-type-field-count known-struct-type-pure-constructor? known-struct-type-sealed?
          known-constructor known-constructor? known-constructor-type
          known-predicate known-predicate? known-predicate-type
          known-accessor known-accessor? known-accessor-type
          known-mutator known-mutator? known-mutator-type
          known-struct-constructor known-struct-constructor? known-struct-constructor-type-id
-         known-struct-predicate known-struct-predicate? known-struct-predicate-type-id known-struct-predicate-authentic?
+         known-struct-predicate known-struct-predicate? known-struct-predicate-type-id
+         known-struct-predicate-authentic? known-struct-predicate-sealed?
          known-field-accessor known-field-accessor? known-field-accessor-type-id known-field-accessor-authentic?
          known-field-accessor-pos known-field-accessor-known-immutable?
          known-field-mutator known-field-mutator? known-field-mutator-type-id known-field-mutator-authentic?
@@ -84,6 +87,10 @@
 ;; procedure that does not return, because it always escapes
 (struct known-procedure/no-return () #:prefab #:omit-define-syntaxes #:super struct:known-procedure/single-valued)
 
+;; procedure that succeeds on 0 arguments and doesn't call arbitrary other code,
+;; but might consult state and/or the continuation
+(struct known-procedure/parameter () #:prefab #:omit-define-syntaxes #:super struct:known-procedure/single-valued)
+
 ;; procedure that can be inlined, where the `expr` is in pre-schemify form
 (struct known-procedure/can-inline (expr) #:prefab #:omit-define-syntaxes #:super struct:known-procedure)
 (struct known-procedure/can-inline/need-imports (needed) ; (list (cons <sym> (cons <sym> <#f-or-index>)) ...)
@@ -99,6 +106,12 @@
 ;; procedure with single value that never raises an exception or otherwise captures/escapes the calling context
 (struct known-procedure/succeeds () #:prefab #:omit-define-syntaxes #:super struct:known-procedure/no-prompt)
 
+;; procedure that always succeeds, has no side effect, and would return the same value anytime later,
+;; so can be reordered with later things, but can't be reordered before things that might raise an
+;; exception; used for unsafe accessors
+(struct known-procedure/then-pure () #:prefab #:omit-define-syntaxes #:super struct:known-procedure/succeeds)
+(struct known-procedure/then-pure/folding-unsafe (safe) #:prefab #:omit-define-syntaxes #:super struct:known-procedure/then-pure)
+
 ;; procedure that accepts any arguments, returns a single value, and has allocation as its only effect 
 (struct known-procedure/allocates () #:prefab #:omit-define-syntaxes #:super struct:known-procedure/succeeds)
 
@@ -107,7 +120,6 @@
 
 ;; pure and folding:
 (struct known-procedure/pure/folding () #:prefab #:omit-define-syntaxes #:super struct:known-procedure/pure)
-(struct known-procedure/pure/folding-unsafe (safe) #:prefab #:omit-define-syntaxes #:super struct:known-procedure/pure/folding)
 
 ;; procedure (no-prompt) with an unsafe variant, especially ones that won't get substituted
 ;; simply by compiling in unsafe mode
@@ -115,7 +127,7 @@
 (struct known-procedure/has-unsafe/folding () #:prefab #:omit-define-syntaxes #:super struct:known-procedure/has-unsafe)
 (struct known-procedure/has-unsafe/folding/limited (kind) #:prefab #:omit-define-syntaxes #:super struct:known-procedure/has-unsafe/folding)
 
-(struct known-struct-type (type field-count pure-constructor?) #:prefab #:omit-define-syntaxes #:super struct:known-consistent)
+(struct known-struct-type (type field-count pure-constructor? sealed?) #:prefab #:omit-define-syntaxes #:super struct:known-consistent)
 
 ;; procedures with a known connection to a structure type:
 (struct known-constructor (type) #:prefab #:omit-define-syntaxes #:super struct:known-procedure/allocates)
@@ -123,7 +135,7 @@
 (struct known-accessor (type) #:prefab #:omit-define-syntaxes #:super struct:known-procedure/single-valued)
 (struct known-mutator (type) #:prefab #:omit-define-syntaxes #:super struct:known-procedure/single-valued)
 (struct known-struct-constructor (type-id) #:prefab #:omit-define-syntaxes #:super struct:known-constructor)
-(struct known-struct-predicate (type-id authentic?) #:prefab #:omit-define-syntaxes #:super struct:known-predicate)
+(struct known-struct-predicate (type-id authentic? sealed?) #:prefab #:omit-define-syntaxes #:super struct:known-predicate)
 (struct known-field-accessor (type-id authentic? pos known-immutable?) #:prefab #:omit-define-syntaxes #:super struct:known-accessor)
 (struct known-field-mutator (type-id authentic? pos) #:prefab #:omit-define-syntaxes #:super struct:known-mutator)
 (struct known-struct-constructor/need-imports (needed) #:prefab #:omit-define-syntaxes #:super struct:known-struct-constructor)

@@ -9,8 +9,10 @@ try_archive_conftest()
    $AR $ARFLAGS conftest.a conftest.$OBJEXT > /dev/null 2>&1
 }
 
+ICP_STRIP_FLAG=""
+
 if test "${enable_strip}" = "yes" ; then
-  AC_CHECK_TOOL([STRIP], [strip])
+  AC_CHECK_TOOL([STRIP], [strip], [:])
   # Used to add -S flag, but not all `strip' variants support it:
   STRIP_DEBUG="${STRIP}"
   if test "${INSTALL_LIBS_ENABLE}" = "install" ; then
@@ -18,6 +20,9 @@ if test "${enable_strip}" = "yes" ; then
   fi
   if test "${strip_needs_dash_s}" = "yes" ; then
     check_strip_dash_s=yes
+  fi
+  if test "${STRIP}" = ":"; then
+    check_strip_dash_s=no
   fi
   if test "${check_strip_dash_s}" = "yes" ; then
     # Can only support library stripping if something like "-S" is available:
@@ -36,22 +41,5 @@ if test "${enable_strip}" = "yes" ; then
       STRIP_DEBUG="${STRIP_LIB_DEBUG}"
     fi
   fi
+  ICP_STRIP_FLAG=" -s"
 fi
-
-case "$host_os" in
-  darwin*)
-    case "$host_cpu" in
-       aarch64)
-         STRIP_SIGNATURE="codesign --remove-signature"
-         RESTORE_SIGNATURE="codesign -s - --entitlements"
-       ;;
-       *)
-        # Check whether `codesign` can remove signatures
-        touch sig-test-file
-        if `codesign --remove-signature sig-test-file > /dev/null 2>&1` ; then
-           STRIP_SIGNATURE="codesign --remove-signature"
-        fi
-        rm sig-test-file
-        ;;
-    esac
-esac

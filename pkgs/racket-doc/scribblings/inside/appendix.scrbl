@@ -1,5 +1,6 @@
 #lang scribble/base
-@(require "utils.rkt")
+@(require "utils.rkt"
+          scribble/bnf)
 
 @title[#:style '(grouper toc) #:tag "appendix"]{Appendices}
 
@@ -30,44 +31,51 @@ build modes that are more suitable for developing Racket itself; see
 
 @section[#:tag "ios-cross-compilation"]{Cross-compiling Racket Sources for iOS}
 
-Everything in this section can be adapted to other cross-compilation
-targets, but iOS is used to give concrete examples.
+See @secref[#:doc raco-doc "cross-system"] for general information on
+using Racket in cross-build mode. Everything in this section can be
+adapted to other cross-compilation targets, but iOS is used to make
+the examples concrete.
 
-After cross-compiling Racket CS for iOS according to the documentation
-in the source distribution's @filepath{src/README.txt} file, you can
-use that build of Racket in conjunction with the host build it was
+After cross-compiling Racket CS for iOS according to the source
+distribution's @filepath{src/README.txt} file, you can use that build
+@nonterm{ios-racket-dir} in conjunction with the host build it was
 compiled by to cross-compile Racket modules for iOS by passing the
 following set of flags to the host executable:
 
 @verbatim[#:indent 2]{
-racket \
-  --compile-any \
-  --compiled 'compiled_host:tarm64osx' \
-  --cross \
-  --cross-compiler tarm64osx /path/to/ios/racket/lib \
-  --config /path/to/ios/racket/etc \
-  --collects /path/to/ios/racket/collects
+racket  \
+  --compile-any  \
+  --compiled @nonterm{ios-racket-dir}/src/build/cs/c/compiled:  \
+  --cross  \
+  --cross-compiler tarm64osx @nonterm{ios-racket-dir}/src/build/cs/c  \
+  --config @nonterm{ios-racket-dir}/etc  \
+  --collects @nonterm{ios-racket-dir}/collects
 }
 
-The above command runs the host Racket REPL with support for
-outputting compiled code for both the host machine and for the
-@tt{tarm64osx} target.  The second path to @exec{--compiled} may be
-any relative path, but @filepath{tarm64osx} is what the cross build
-uses to set up its installation so it is convenient to re-use it.
+The above command runs the host Racket REPL with support for writing
+compiled code for both the host machine and for the @tt{tarm64osx}
+target. The first path to @DFlag{compiled} (before the @litchar{:})
+can be any absolute path, and @filepath{.zo} files for the host
+platform will be written there; specifying the path
+@filepath{@nonterm{ios-racket-dir}/src/build/cs/c/compiled} is meant
+to reuse the directory that was created during cross-compilation
+installation. The second path to @DFlag{compiled} (after @litchar{:})
+is empty, which causes target-platform @filepath{.zo} files to be
+written in the usual @filepath{compiled} subdirectory.
 
-Furthermore, you can instruct the host Racket to run library code by
-passing the @exec{-l} flag.  For example, you can setup the target
+Instruct the host Racket to run library code by
+passing the @Flag{l} flag.  For example, you can setup the target
 Racket's installation with the following command:
 
 @verbatim[#:indent 2]{
-racket \
-  --compile-any \
-  --compiled 'compiled_host:tarm64osx' \
-  --cross \
-  --cross-compiler tarm64osx /path/to/ios/racket/lib \
-  --config /path/to/ios/racket/etc \
-  --collects /path/to/ios/racket/collects \
-  -l- \
+racket  \
+  --compile-any  \
+  --compiled @nonterm{ios-racket-dir}/src/build/cs/c/compiled:  \
+  --cross  \
+  --cross-compiler tarm64osx @nonterm{ios-racket-dir}/lib  \
+  --config @nonterm{ios-racket-dir}/etc  \
+  --collects @nonterm{ios-racket-dir}/collects  \
+  -l-  \
   raco setup
 }
 
@@ -77,16 +85,46 @@ use with @cppi{racket_embedded_load_file} (after installing
 with:
 
 @verbatim[#:indent 2]{
-racket \
-  --compile-any \
-  --compiled 'compiled_host:tarm64osx' \
-  --cross \
-  --cross-compiler tarm64osx /path/to/ios/racket/lib \
-  --config /path/to/ios/racket/etc \
-  --collects /path/to/ios/racket/collects \
-  -l- \
+racket  \
+  --compile-any  \
+  --compiled @nonterm{ios-racket-dir}/src/build/cs/c/compiled:  \
+  --cross  \
+  --cross-compiler tarm64osx @nonterm{ios-racket-dir}/lib  \
+  --config @nonterm{ios-racket-dir}/etc  \
+  --collects @nonterm{ios-racket-dir}/collects  \
+  -l-  \
   raco ctool --mods application.zo src/application.rkt
 }
+
+@; ----------------------------------------
+
+@section[#:tag "link-dll"]{Linking to DLLs on Windows}
+
+Some Windows linking tools, such as MinGW-w64, accept a
+@filepath{.dll} for linking to generate an executable that refers to
+the @filepath{.dll}. Other tools, such as Microsoft Visual Studio,
+need a @filepath{.lib} stub library to describe the @filepath{.dll}
+that will be used. The Racket distribution does not include
+@filepath{.lib} stub libraries, but various tools exist to generate a
+@filepath{.lib} file from a @filepath{.dll} and @filepath{.def} file
+that is included in a racket distribution.
+
+To create a @filepath{@italic{x}.lib} using Microsoft Visual Studio
+tools (to link with @filepath{@italic{x}.dll}):
+
+@itemlist[
+
+ @item{Locate the file @filepath{@italic{x}.def} using the same
+       base name @italic{x} as in @filepath{@italic{x}.dll}.}
+
+  @item{Generate @filepath{@italic{x}.lib} with this command:
+
+        @commandline{lib /def:@italic{x}.def /out:@italic{x}.lib /machine:@italic{mach}}
+
+        Use a suitable platform description in place of @italic{mach},
+        such as @litchar{x64} for 64-bit Windows on x86_64.}
+
+]
 
 @; ----------------------------------------
 
@@ -137,25 +175,6 @@ sections:
 
 #include "run.c"
 
-static char *get_self_path()
-{
-  ssize_t len, blen = 256;
-  char *s = malloc(blen);
-
-  while (1) {
-    len = readlink("/proc/self/exe", s, blen-1);
-    if (len == (blen-1)) {
-      free(s);
-      blen *= 2;
-      s = malloc(blen);
-    } else if (len < 0) {
-      fprintf(stderr, "failed to get self (%d)\n", errno);
-      exit(1);
-    } else
-      return s;
-  }
-}
-
 static long find_section(const char *exe, const char *sectname)
 {
   int fd, i;
@@ -196,7 +215,7 @@ int main(int argc, char *argv[])
 
   memset(&ba, 0, sizeof(ba));
 
-  ba.boot1_path = get_self_path();
+  ba.boot1_path = racket_get_self_exe_path(argv[0]);
   ba.boot2_path = ba.boot1_path;
   ba.boot3_path = ba.boot1_path;
 
@@ -255,22 +274,6 @@ then the executable can access is own path using
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
 
-static char *get_self_path()
-{
-  char *s;
-  uint32_t size = 0;
-  int r;
-
-  r = _NSGetExecutablePath(NULL, &size);
-  s = malloc(size+1);
-  r = _NSGetExecutablePath(s, &size);
-  if (!r)
-    return s;
-
-  fprintf(stderr, "could not get executable path\n");
-  exit(1);
-}
-
 static long find_section(char *segname, char *sectname)
 {
   const struct section_64 *s = getsectbyname(segname, sectname);
@@ -290,7 +293,7 @@ int main(int argc, char **argv)
 
   memset(&ba, 0, sizeof(ba));
 
-  ba.boot1_path = get_self_path();
+  ba.boot1_path = racket_get_self_exe_path(argv[0]);
   ba.boot2_path = ba.boot1_path;
   ba.boot3_path = ba.boot1_path;
 

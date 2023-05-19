@@ -62,6 +62,9 @@
   (ptest "1/2" 1/2)
   (ptest "#f" #f)
   (ptest "#\\x" #\x)
+  (ptest "\"apple\"" "apple")
+  (ptest "\"\U1f3f4\u200d\u2620\ufe0f\"" "\U1f3f4\u200d\u2620\ufe0f") ; pirate flag
+
   (ptest "'apple" 'apple)
   (ptest "'|apple banana|" '|apple banana|)
   (ptest "'||" '||)
@@ -100,6 +103,11 @@
   (ptest "'#hasheq((1 . 2))" (make-hasheq (list (cons 1 2))))
   (ptest "'#hasheqv((1 . 2))" (hasheqv 1 2))
   (ptest "'#hasheqv((1 . 2))" (make-hasheqv (list (cons 1 2))))
+  (ptest "'#hashalw((1 . 2))" (hashalw 1 2))
+  (ptest "'#hashalw((1 . 2))" (make-hashalw (list (cons 1 2))))
+
+  (ptest "#<stencil 5: \"a\" b>" (stencil-vector 5 "a" 'b))
+  (ptest "#<stencil 1: #0=(#0#)>" (stencil-vector 1 (read (open-input-string "#0=(#0#)"))))
 
   (ptest "(mcons 1 2)" (mcons 1 2))
   (ptest "(mcons 1 '())" (mcons 1 null))
@@ -107,6 +115,9 @@
   (ptest "#<a>" (a 1 2))
   (ptest "(b 1 2)" (b 1 2))
   (ptest "'#s(c 1 2)" (c 1 2))
+  (test "#s(c 1 2)" 'prefab
+        (parameterize ([print-unreadable #f])
+          (format "~s" (c 1 2))))
 
   (let ([s (b 1 2)])
     (ptest "(list (cons (b 1 2) 0) (cons (b 1 2) 0))" (list (cons s 0) (cons s 0))))
@@ -336,9 +347,13 @@
   (test "'()" format "~e" (list (show-nothing))))
 
 ;; ----------------------------------------
-;; make sure +inf.0 is ok for `print-syntax-width':
+;; make sure +inf.0, 3, and 0 are ok for `print-syntax-width':
 (parameterize ([print-syntax-width +inf.0])
   (test +inf.0 print-syntax-width))
+(parameterize ([print-syntax-width 0])
+  (test 0 print-syntax-width))
+(parameterize ([print-syntax-width 3])
+  (test 3 print-syntax-width))
 
 ;; ----------------------------------------
 ;; Try to provoke a stack overflow during printing of truncated
@@ -428,6 +443,21 @@
 
   (try 7 #:ok? #f)
   (try (box 7) #:ok? #f))
+
+;; Check that some other values are allowed as quoted in compiled code
+(for-each (lambda (v)
+            (define s (open-output-bytes))
+            (write (compile v) s)
+            (test v
+                  values
+                  (eval (parameterize ([read-accept-compiled #t])
+                          (read (open-input-bytes (get-output-bytes s)))))))
+          (list
+           1
+           "apple"
+           (vector 1 2 3)
+           (fxvector 1 2 3 -100)
+           (flvector 1.0 2.0 3.0 +inf.0 +nan.0)))
 
 ;; ----------------------------------------
 ;; Test print parameters
@@ -670,7 +700,28 @@
                     "('a ,a `a ,@a #'a #,a #`a #,@a)"
                     "'('a ,a `a ,@a #'a #,a #`a #,@a)"
                     "('a ,a `a ,@a #'a #,a #`a #,@a)"))
-    
+
+  (parameterize ([print-reader-abbreviations #t])
+    (test-print/all (list (mcons 'unquote '()) (vector (mcons 1 2) 'unquote '()))
+                    "({unquote} #({1 . 2} unquote ()))"
+                    "({unquote} #({1 . 2} unquote ()))"
+                    "({unquote} #({1 . 2} unquote ()))"
+                    "(list (mcons 'unquote '()) (vector (mcons 1 2) 'unquote '()))"
+                    "({unquote} #({1 . 2} unquote ()))"))
+
+  (test-print/all (stencil-vector 5 "a" 'b)
+                  "#<stencil 5: \"a\" b>"
+                  "#<stencil 5: a b>"
+                  "#<stencil 5: \"a\" b>"
+                  "#<stencil 5: \"a\" b>"
+                  "#<stencil 5: \"a\" b>")
+  (test-print/all (stencil-vector 5 "a" (read (open-input-string "#0=(#0#)")))
+                  "#<stencil 5: \"a\" #0=(#0#)>"
+                  "#<stencil 5: a #0=(#0#)>"
+                  "#<stencil 5: \"a\" #0=(#0#)>"
+                  "#<stencil 5: \"a\" #0=(#0#)>"
+                  "#<stencil 5: \"a\" #0=(#0#)>")
+
   (void)))
 
 ;; ----------------------------------------
@@ -825,5 +876,57 @@
 
   (show println writeln displayln)
   (show pretty-print pretty-write pretty-display))
+
+;; ----------------------------------------
+
+(let ()
+  (struct named-procedure (procedure name)
+    #:property prop:procedure (struct-field-index procedure)
+    #:property prop:object-name (struct-field-index name))
+
+  (define f (named-procedure (lambda (x) x) "string name"))
+  (test "#<procedure:string name>" format "~s" f)
+  (test "string name" object-name f)
+
+  (define f2 (named-procedure (lambda (x) x) '("string name")))
+  (test "#<procedure>" format "~s" f2)
+  (test '("string name") object-name f2)
+
+  (define f3 (procedure-rename f 'other-name))
+  (test "#<procedure:other-name>" format "~a" f3)
+  (test 'other-name object-name f3))
+
+(let ()
+  (struct named-procedure (procedure name)
+    #:property prop:procedure (struct-field-index procedure)
+    #:property prop:object-name (struct-field-index name)
+    #:transparent)
+
+  (define f (named-procedure (procedure-rename (lambda (x) x) 'inner) "string name"))
+  (test "(named-procedure #<procedure:inner> \"string name\")" format "~v" f)
+  (test "string name" object-name f)
+
+  (define f2 (named-procedure (procedure-rename (lambda (x) x) 'inner) '("string name")))
+  (test "(named-procedure #<procedure:inner> '(\"string name\"))" format "~v" f2)
+  (test '("string name") object-name f2)
+
+  (define f3 (procedure-rename f 'other-name))
+  (test "#<procedure:other-name>" format "~a" f3)
+  (test 'other-name object-name f3))
+
+;; ----------------------------------------
+
+(parameterize ([global-port-print-handler
+                (lambda (v o [depth 0])
+                  (display "<redacted>" o))])
+  (let ([o (open-output-string)])
+    (print '(hello) o)
+    (test "<redacted>" get-output-string o)
+    (default-global-port-print-handler '(hello) o)
+    (test "<redacted>'(hello)" get-output-string o)
+    (default-global-port-print-handler '(hello) o 1)
+    (test "<redacted>'(hello)(hello)" get-output-string o)))
+
+;; ----------------------------------------
 
 (report-errs)

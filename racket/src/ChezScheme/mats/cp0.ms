@@ -367,8 +367,21 @@
                 (begin (b) (c)))
             (x)
             (y))))
-  (error? (apply zero? 0))
-  (error? (if (apply eof-object 1 2) 3 4))
+   (error? (apply zero? 0))
+   (error? (if (apply eof-object 1 2) 3 4))
+  ; test for folding of multiple-value primitives
+   (equivalent-expansion?
+     (expand/optimize '(lambda () (div-and-mod 7 3)))
+     '(lambda () (#3%values 2 1)))
+   (equivalent-expansion?
+     (expand/optimize '(lambda () (exact-integer-sqrt 19)))
+     '(lambda () (#3%values 4 3)))
+   (equivalent-expansion?
+     (expand/optimize
+       '(call-with-values
+          (lambda () (div-and-mod 7 3))
+          (lambda (x y) (#2%cons (* x 10) (/ y 10)))))
+     '(#2%cons 20 1/10))
 
   (equivalent-expansion?
    (expand/optimize '(lambda (t) (#3%$value (if t 1 (values 3 3 3))) #t))
@@ -915,7 +928,28 @@
       (expand/optimize
         '(lambda (x) (if x x #f))))
     '(lambda (x) x))
- ; verify optimization of (if s s #f) => s
+ ; verify optimization of (if (eq? x y) x y)  => (begin x y) => y
+  (equivalent-expansion?
+    (parameterize ([enable-cp0 #t] [#%$suppress-primitive-inlining #f] [optimize-level 2] [compile-profile #f])
+      (expand/optimize
+        '(lambda (x y) (if (eq? x y) x y))))
+    '(lambda (x y) y))
+  (equivalent-expansion?
+    (parameterize ([enable-cp0 #t] [#%$suppress-primitive-inlining #f] [optimize-level 2] [compile-profile #f])
+      (expand/optimize
+        '(lambda (x y) (if (eq? y x) x y))))
+    '(lambda (x y) y))
+  (equivalent-expansion?
+    (parameterize ([enable-cp0 #t] [#%$suppress-primitive-inlining #f] [optimize-level 2] [compile-profile #f])
+      (expand/optimize
+        '(lambda (y) (if (eq? 'x y) 'x y))))
+    '(lambda (y) y))
+  (equivalent-expansion?
+    (parameterize ([enable-cp0 #t] [#%$suppress-primitive-inlining #f] [optimize-level 2] [compile-profile #f])
+      (expand/optimize
+        '(lambda (y) (if (eq? y 'x) 'x y))))
+    '(lambda (y) y))
+ ; verify optimization of or pattern
   (equivalent-expansion?
     (parameterize ([enable-cp0 #t] [#%$suppress-primitive-inlining #f] [optimize-level 2] [compile-profile #f])
       (expand/optimize
@@ -998,6 +1032,17 @@
       (expand/optimize
         `(if (not (or #t (futz))) 17 32)))
     32)
+  ; verify expansion of (eq? _ #f) pattern
+  (equivalent-expansion?
+    (parameterize ([#%$suppress-primitive-inlining #f] [run-cp0 (lambda (cp0 x) (cp0 x))] [optimize-level 2])
+      (expand/optimize
+        `(lambda (x) (eq? x #f))))
+    `(lambda (x) (if x #f #t)))
+  (equivalent-expansion?
+    (parameterize ([#%$suppress-primitive-inlining #f] [run-cp0 (lambda (cp0 x) (cp0 x))] [optimize-level 2])
+      (expand/optimize
+        `(lambda (x) (if (eq? x #f) 1 2))))
+    `(lambda (x) (if x 2 1)))
 )
 
 (mat expand-output
@@ -2294,7 +2339,7 @@
       ;; Check that expansion matches or doesn't match under various conditions.
       ;; Expansion should not match in safe mode for expression involving the names
       ;; `$xxx`, `$yyy`, and `$zzz`, but it should match when those are wrapped with
-      ;; `add1` (whcih makes the expression known-single-valued).
+      ;; `add1` (which makes the expression known-single-valued).
       ;; The names `$nontail-xxx`, `$nontail-yyy`, and `$nontail-zzz` must similarly
       ;; be wrapped to match in either safe or unsafe mode, since unsafe mode is obliged
       ;; to preserve non-tailness.
@@ -2614,7 +2659,8 @@
                  (begin (#%write 'f) #\y)
                  (begin (#%write 'g) ($zzz-ok))))
              (begin (#%write 'h) 1)))))
-  (expansion-matches?
+  (parameterize ([enable-type-recovery #f])
+   (expansion-matches?
         '(begin (write 'a)
            ((begin (write 'b) string-ref)
             (begin (write 'c)
@@ -2637,7 +2683,7 @@
                  (begin (#%write 'e) ($xxx-ok))
                  (begin (#%write 'f) 'oops)
                  (begin (#%write 'g) ($zzz-ok))))
-             (begin (#%write 'h) 1)))))
+             (begin (#%write 'h) 1))))))
   (expansion-matches?
         `(begin (write 'a)
            ((begin (write 'b) string-ref)
@@ -2730,7 +2776,8 @@
                  (begin (#%write 'f) 121)
                  (begin (#%write 'g) ($zzz-ok))))
              (begin (#%write 'h) 1)))))
-  (expansion-matches?
+  (parameterize ([enable-type-recovery #f])
+   (expansion-matches?
         '(begin (write 'a)
            ((begin (write 'b) fxvector-ref)
             (begin (write 'c)
@@ -2753,7 +2800,7 @@
                  (begin (#%write 'e) ($xxx-ok))
                  (begin (#%write 'f) 'oops)
                  (begin (#%write 'g) ($zzz-ok))))
-             (begin (#%write 'h) 1)))))
+             (begin (#%write 'h) 1))))))
   (expansion-matches?
         `(begin (write 'a)
            ((begin (write 'b) fxvector-ref)
@@ -2894,12 +2941,12 @@
       (expand/optimize
         '(lambda (v)
            (let ([v2 (if (vector? v) v (error))])
-             (let ([q (vector-sort v2)] [n (#3%vector-length v)])
+             (let ([q (vector-sort < v2)] [n (#3%vector-length v)])
                (display "1")
                (list q n))))))
     '(lambda (v)
        (let ([v2 (begin (if (#2%vector? v) (#2%void) (#2%error)) v)])
-         (let ([q (#2%vector-sort v2)] [n (#3%vector-length v)])
+         (let ([q (#2%vector-sort #2%< v2)] [n (#3%vector-length v)])
            (#2%display "1")
            (#2%list q n)))))
   (equivalent-expansion?
@@ -2907,11 +2954,11 @@
       (expand/optimize
         '(lambda (v)
            (let ([v2 (if (vector? v) v (error))])
-             (let ([q (vector-sort v2)] [n (or v 72)])
+             (let ([q (vector-sort < v2)] [n (or v 72)])
                (display "1")
                (list q n))))))
     '(lambda (v)
-       (let ([q (#2%vector-sort (begin (if (#2%vector? v) (#2%void) (#2%error)) v))]
+       (let ([q (#2%vector-sort #2%< (begin (if (#2%vector? v) (#2%void) (#2%error)) v))]
              [n (if v v 72)])
          (#2%display "1")
          (#2%list q n))))
@@ -2923,7 +2970,7 @@
       (syntax-rules ()
         [(_ eqprim) (eqtest eqprim #f)]
         [(_ eqprim generic?)
-         (parameterize ([enable-cp0 #t] [#%$suppress-primitive-inlining #f])
+         (parameterize ([enable-cp0 #t] [#%$suppress-primitive-inlining #f] [enable-type-recovery #f])
            (let ([arity-mask (procedure-arity-mask eqprim)] [primref `($primitive ,(if (= (optimize-level) 3) 3 2) eqprim)])
              (define-syntax ifsafe
                (syntax-rules ()
@@ -3163,6 +3210,7 @@
    (or (not (enable-cp0))
        (not (procedure-known-single-valued? (lambda (f) (#2%$app/value f)))))
    (or (not (enable-cp0))
+       (#%$suppress-primitive-inlining)
        (eq? (current-eval) interpret)
        (procedure-known-single-valued? (case-lambda
                                         [(f) (#3%$app/value f)]
@@ -3171,6 +3219,7 @@
                                                    (#3%$app/value f))])))
 
    (or (not (enable-cp0))
+       (#%$suppress-primitive-inlining)
        (eq? (current-eval) interpret)
        (procedure-known-single-valued? (lambda () (abort 'x))))
    (or (not (enable-cp0))
@@ -3179,14 +3228,25 @@
    (or (not (enable-cp0))
        (not (procedure-known-single-valued? (lambda (f) (#2%$app/no-return f)))))
    (or (not (enable-cp0))
+       (#%$suppress-primitive-inlining)
        (eq? (current-eval) interpret)
        (procedure-known-single-valued? (case-lambda
                                         [(f) (#3%$app/no-return f)]
                                         [(f g) (if (g)
                                                    (abort 'oops)
                                                    (#3%$app/no-return f))])))
-
-)
+   (or (not (enable-cp0))
+       (#%$suppress-primitive-inlining)
+       (eq? (current-eval) interpret)
+       (let ([mk (make-wrapper-procedure
+                  (lambda (x)
+                    (+ (x) 1))
+                  2
+                  'data)])
+         (procedure-known-single-valued? (lambda (f)
+                                           (if (f #t)
+                                               (mk (mk f))
+                                               #f))))))
 
 (mat make-wrapper-procedure
   (equivalent-expansion?
@@ -3339,3 +3399,67 @@
      (expand/optimize '(#3%$app/value x y))
      '($app/value x y)))
 )
+
+(mat cross-library-inlining
+  (begin
+    ;; Make sure inlining doesn't use the wrong `helper`
+    (library (cross-library-inlining-test)
+      (export a b am bm)
+      (import (rnrs))
+      (define-syntax def
+        (syntax-rules ()
+          [(_ id idm)
+           (begin
+             (define (helper x) (if (zero? x) 'id (helper (- x 1))))
+             (define (id x) (helper x))
+             ;; causes `helper` to be preserved:
+             (define-syntax idm (syntax-rules () [(_) helper])))]))
+      (def a am)
+      (def b bm))
+    #t)
+  (eq? 'a (let ()
+            (import (cross-library-inlining-test))
+            (a 10)))
+  (eq? 'b (let ()
+            (import (cross-library-inlining-test))
+            (b 10)))
+
+  (begin
+    (library (check-that-inlined-set!-is-handled-correctly)
+      (export make-param)
+      (import (scheme))
+      (define (make-param initial)
+        (let ([v initial])
+          (case-lambda
+           [() v]
+           [(x) (set! v x)]))))
+    (import (check-that-inlined-set!-is-handled-correctly))
+    (define parameter-porentially-inlined (make-param #f))
+    (not (parameter-porentially-inlined)))
+  (eq? (void) (parameter-porentially-inlined 'other))
+  (eq? 'other (parameter-porentially-inlined))
+  )
+
+(cp0-mat cp0-continuation-marks
+    (equivalent-expansion?
+     (expand/optimize '(with-continuation-mark 'x 'y 10))
+     '10)
+    (equivalent-expansion?
+     (expand/optimize '(with-continuation-mark (go-get-x) 'y 10))
+     (if (eqv? (optimize-level) 3)
+         '(begin (go-get-x) 10)
+         '(begin (#3%$value (go-get-x)) 10)))
+    (equivalent-expansion?
+     (expand/optimize '(with-continuation-mark 'x (go-get-y) 10))
+     (if (eqv? (optimize-level) 3)
+         '(begin (go-get-y) 10)
+         '(begin (#3%$value (go-get-y)) 10)))
+    (equivalent-expansion?
+     (expand/optimize '(lambda (z) (with-continuation-mark 'x 'y z)))
+     '(lambda (z) z))
+    (equivalent-expansion?
+     (expand/optimize '(lambda (z) (with-continuation-mark 'x 'y (values z z z))))
+     (if (eqv? (optimize-level) 3)
+         '(lambda (z) (#3%values z z z))
+         '(lambda (z) (#2%values z z z))))
+  )

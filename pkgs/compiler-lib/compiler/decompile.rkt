@@ -108,7 +108,7 @@
                                   #:when (exact-integer? k))
                          k)
                        <))
-  (define-values (mpi-vector requires provides phase-to-link-modules)
+  (define-values (mpi-vector requires recur-requires provides phase-to-link-modules)
     (deserialize-requires-and-provides l))
   (define (phase-wrap phase l)
     (case phase
@@ -123,6 +123,15 @@
                  (for/list ([phase+mpis (in-list requires)])
                    (phase-wrap (car phase+mpis)
                                (map collapse-module-path-index (cdr phase+mpis))))))
+     (quote (recurs: ,@(apply
+                        append
+                        (for/list ([phase+mpis (in-list requires)]
+                                   [recurs (in-list recur-requires)])
+                          (phase-wrap (car phase+mpis)
+                                      (for/list ([mpi (cdr phase+mpis)]
+                                                 [recur? (in-list recurs)]
+                                                 #:when recur?)
+                                        (collapse-module-path-index mpi)))))))
      (provide ,@(apply
                  append
                  (for/list ([(phase ht) (in-hash provides)])
@@ -606,7 +615,8 @@
          (decodes #:pos next-pos (id ...) rhs))]))
   (define-syntax-rule (decode* (deser id ...))
     (decodes (id ...) `(deser ,id ...)))
-  (case (vector-ref vec pos)
+  (define kw (vector-ref vec pos))
+  (case kw
     [(#:ref)
      (values (vector-ref shared (vector-ref vec (add1 pos)))
              (+ pos 2))]
@@ -659,15 +669,20 @@
                   [(#:seteqv) 'seteqv])
                ,@(vector->list r))
              next-pos)]
-    [(#:hash #:hasheq #:hasheqv)
+    [(#:hash #:hasheq #:hasheqv #:hasheqv/phase+space)
      (define len (vector-ref vec (add1 pos)))
      (define-values (l next-pos)
        (for/fold ([l null] [pos (+ pos 2)]) ([i (in-range len)])
-         (decodes #:pos pos (k v) (list* v k l))))
+         (decodes #:pos pos (k v) (list* v
+                                         (if (and (eq? kw '#:hasheqv/phase+space)
+                                                  (pair? k))
+                                             `(phase+space ,(car k) ,(cdr k))
+                                             k)
+                                         l))))
      (values `(,(case (vector-ref vec pos)
                   [(#:hash) 'hash]
                   [(#:hasheq) 'hasheq]
-                  [(#:hasheqv) 'hasheqv])
+                  [(#:hasheqv #:hasheqv/phase+space) 'hasheqv])
                ,@(reverse l))
              next-pos)]
     [(#:prefab)

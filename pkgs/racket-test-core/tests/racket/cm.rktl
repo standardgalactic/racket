@@ -94,15 +94,15 @@
                               (map car files))))
                 recomps))))
 
-(try '(("a.rkt" "(module a scheme/base (require \"b.rkt\" \"d.rkt\" \"g.rkt\"))" #t)
-       ("b.rkt" "(module b scheme/base (require scheme/include) (include \"c.sch\"))" #t)
+(try '(("a.rkt" "(module a racket/base (require \"b.rkt\" \"d.rkt\" \"g.rkt\"))" #t)
+       ("b.rkt" "(module b racket/base (require racket/include) (include \"c.sch\"))" #t)
        ("d.rkt" "#reader \"e.rkt\" 10" #t)
        ("c.sch" "5" #f)
        ("e.rkt" "(module e syntax/module-reader \"f.rkt\")" #t)
-       ("f.rkt" "(module f scheme/base (provide (all-from-out scheme/base)))" #t)
-       ("g.rkt" "(module g scheme/base (require (for-syntax scheme/base scheme/include \"i.rkt\")) (define-syntax (f stx) (include \"h.sch\")))" #t)
+       ("f.rkt" "(module f racket/base (provide (all-from-out racket/base)))" #t)
+       ("g.rkt" "(module g racket/base (require (for-syntax racket/base racket/include \"i.rkt\")) (define-syntax (f stx) (include \"h.sch\")))" #t)
        ("h.sch" "(quote-syntax 12)" #f)
-       ("i.rkt" "(module i scheme/base)" #t)
+       ("i.rkt" "(module i racket/base)" #t)
        ("j.rkt" "(module j racket/base (module+ main (require \"b.rkt\")))" #t))
      '([("a.rkt") ("a.rkt") ("a.rkt")]
        [("b.rkt") ("a.rkt" "j.rkt") ("a.rkt" "b.rkt" "j.rkt")]
@@ -146,8 +146,8 @@
                        (cons (file-or-directory-modify-seconds x)
                              "")]
                       [else #f])))])
-  (try '(("a.rkt" "(module a scheme/base (require \"b.rkt\"))" #f)
-         ("b.rkt" "(module b scheme/base)" #f))
+  (try '(("a.rkt" "(module a racket/base (require \"b.rkt\"))" #f)
+         ("b.rkt" "(module b racket/base)" #f))
        '([("b.rkt") ("a.rkt") ("a.rkt")])))
 
 ;; test current-path->mode
@@ -190,9 +190,18 @@
 ;; ----------------------------------------
 
 ;; test `file-stamp-in-paths'
-(test (file-or-directory-modify-seconds (build-path (path-only (collection-file-path "zip.rkt" "file"))
-                                                    compiled-dir
-                                                    "zip_rkt.zo"))
+(test (file-or-directory-modify-seconds
+       (let ([dir (path-only (collection-file-path "zip.rkt" "file"))])
+         (for/or ([root (in-list (current-compiled-file-roots))])
+           (define file (cond
+                          [(eq? root 'same)
+                           (build-path dir compiled-dir "zip_rkt.zo")]
+                          [(relative-path? root)
+                           (build-path dir root compiled-dir "zip_rkt.zo")]
+                          [else
+                           (build-path (reroot-path dir root) compiled-dir "zip_rkt.zo")]))
+           (and (file-exists? file)
+                file))))
       car
       (file-stamp-in-collection
        (collection-file-path "zip.rkt" "file")))
@@ -266,6 +275,15 @@ and the test makes sure that it does and that the first thread doesn't complete.
                       #'1))
                '(void (m)))
   (sexps=>file control-file #t)
+
+  (define compiled-dir-to-discard
+    (let-values ([(base name dir?) (split-path file-to-compile)])
+      (build-path base compiled-dir)))
+  (define dest-zo-file 
+    (let-values ([(base name dir?) (split-path file-to-compile)])
+      (build-path base 
+                  compiled-dir
+                  (bytes->path (regexp-replace #rx"[.]rkt" (path->bytes name) "_rkt.zo")))))
   
   (define p-l-c (compile-lock->parallel-lock-client (make-compile-lock) (current-custodian)))
   (define t1-finished? #f)
@@ -281,22 +299,56 @@ and the test makes sure that it does and that the first thread doesn't complete.
     (channel-get finished)
 
     (test #f 't1-finished? t1-finished?)
+
+    (test #t 'compile-lock::compiled-file-exists (file-exists? dest-zo-file))
     
-    (test #t 
-          'compile-lock::compiled-file-exists
-          (file-exists?
-           (let-values ([(base name dir?) (split-path file-to-compile)])
-             (build-path base 
-                         compiled-dir
-                         (bytes->path (regexp-replace #rx"[.]rkt" (path->bytes name) "_rkt.zo"))))))
-    
-    (define compiled-dir-to-discard
-      (let-values ([(base name dir?) (split-path file-to-compile)])
-        (build-path base compiled-dir)))
     (delete-file file-to-compile)
     (delete-file control-file)
     (delete-file about-to-get-stuck-file)
-    (delete-directory/files compiled-dir-to-discard)))
+    (delete-directory/files compiled-dir-to-discard))
+
+  ;; Check that the `current--shutdown-evt` argument works:
+  (let ()
+    (sexps=>file file-to-compile #:lang "#lang racket"
+                 `(define-syntax (m stx)
+                    (kill-thread (current-thread)))
+                 '(void (m)))
+
+    (define done-sema (make-semaphore))
+    (define current-evt (make-parameter (semaphore-peek-evt done-sema)))
+    (define p-l-c/evt (compile-lock->parallel-lock-client (make-compile-lock)
+                                                          (current-custodian)
+                                                          current-evt))
+    (parameterize ([current-namespace (make-base-namespace)])
+      (parameterize ([parallel-lock-client p-l-c/evt]
+                     [current-load/use-compiled (make-compilation-manager-load/use-compiled-handler)])
+        (define t1-finished? #f)
+        (define t1 (thread/suspend-to-kill (λ () (dynamic-require file-to-compile #f) (set! t1-finished? #t))))
+        (sync (thread-suspend-evt t1))
+
+        (test #f file-exists? dest-zo-file)
+
+        (sexps=>file file-to-compile #:lang "#lang racket")
+
+        (current-evt never-evt)
+        (define t2-finished? #f)
+        (define t2 (thread (λ () (dynamic-require file-to-compile #f) (set! t2-finished? #t))))
+        (sync (system-idle-evt)) ; wait for t2 to get stuck
+
+        (test #f file-exists? dest-zo-file)
+
+        (semaphore-post done-sema)
+
+        (sync (system-idle-evt)) ; wait for t2 to finish
+        (sleep 0.1)
+
+        (test #t file-exists? dest-zo-file)
+
+        (test #f 't1-finished? t1-finished?)
+        (test #t 't2-finished? t2-finished?)))
+
+    (delete-file file-to-compile)
+    (delete-directory/files compiled-dir-to-discard #:must-exist? #f)))
 
 ;; ----------------------------------------
 

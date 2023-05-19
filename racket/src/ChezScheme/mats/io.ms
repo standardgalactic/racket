@@ -20,6 +20,8 @@
 ; are enabled in io.ss
 (define (custom-port-warning? x) #t)
 
+(define prettytest.ss (find-source "prettytest.ss"))
+
 (mat port-operations
   (error? (close-port cons))
   ; the following several clauses test various open-file-output-port options
@@ -510,12 +512,12 @@
   (not (file-port? (open-input-string "hello")))
   (or (threaded?) (= (port-file-descriptor (console-input-port)) 0))
   (or (threaded?) (= (port-file-descriptor (console-output-port)) 1))
-  (> (let ([ip (open-input-file "mat.ss")])
+  (> (let ([ip (open-input-file prettytest.ss)])
        (let ([n (and (file-port? ip) (port-file-descriptor ip))])
          (close-port ip)
          n))
      1)
-  (> (let ([ip (open-input-file "mat.ss" 'compressed)])
+  (> (let ([ip (open-input-file prettytest.ss 'compressed)])
        (let ([n (and (file-port? ip) (port-file-descriptor ip))])
          (close-port ip)
          n))
@@ -533,7 +535,7 @@
  )
 
 (if (case (machine-type)
-     [(pb) #t]
+     [(pb tpb) #t]
      [else (embedded?)])
     (mat iconv-codec
       (error? (errorf 'iconv-codec "-73 is not a string"))
@@ -1047,7 +1049,7 @@
           (newline op)
           (close-port op)))
       ; NB: keep this last among the iconv-codec mats
-      ; close any files left open by failing iconv tests.  this is particulary
+      ; close any files left open by failing iconv tests.  this is particularly
       ; important on windows when the iconv dll isn't available and where keeping
       ; file open can prevent it from being reopened.
       (begin (collect (collect-maximum-generation)) #t)
@@ -2111,7 +2113,7 @@
   (error? (file-buffer-size (+ (most-positive-fixnum) 1)))
   (error? (file-buffer-size 1024.0))
   (parameterize ([file-buffer-size (* (file-buffer-size) 2)])
-    (let ([ip (open-file-input-port "prettytest.ss")])
+    (let ([ip (open-file-input-port prettytest.ss)])
       (let ([n (bytevector-length (binary-port-input-buffer ip))])
         (close-input-port ip)
         (eqv? n (file-buffer-size)))))
@@ -2162,11 +2164,11 @@
             (lambda (op) (put-bytevector op (get-bytevector-all ip))))))
       (fnlength ofn))
     (define (compress-file-test fmt)
-      (let ([orig (fnlength "prettytest.ss")]
-            [low (compress-file "prettytest.ss" "testfile.ss" fmt 'low)]
-            [medium (compress-file "prettytest.ss" "testfile.ss" fmt 'medium)]
-            [high (compress-file "prettytest.ss" "testfile.ss" fmt 'high)]
-            [maximum (compress-file "prettytest.ss" "testfile.ss" fmt 'maximum)])
+      (let ([orig (fnlength prettytest.ss)]
+            [low (compress-file prettytest.ss "testfile.ss" fmt 'low)]
+            [medium (compress-file prettytest.ss "testfile.ss" fmt 'medium)]
+            [high (compress-file prettytest.ss "testfile.ss" fmt 'high)]
+            [maximum (compress-file prettytest.ss "testfile.ss" fmt 'maximum)])
         (define-syntax test1
           (syntax-rules ()
             [(_ level)
@@ -2229,28 +2231,28 @@
                                           (test (+ 1 i)))))
                                (loop))))))))))))
     (and
-     (cmp (open-file-input-port "prettytest.ss")
-          (open-file-input-port "prettytest.ss"))
-     (cmp (open-file-input-port "prettytest.ss" (file-options compressed))
-          (open-file-input-port "prettytest.ss"))
-     (cmp (open-file-input-port "prettytest.ss")
-          (open-file-input-port "prettytest.ss" (file-options compressed)))
-     (cmp (open-file-input-port "prettytest.ss" (file-options compressed))
-          (open-file-input-port "prettytest.ss" (file-options compressed)))
+     (cmp (open-file-input-port prettytest.ss)
+          (open-file-input-port prettytest.ss))
+     (cmp (open-file-input-port prettytest.ss (file-options compressed))
+          (open-file-input-port prettytest.ss))
+     (cmp (open-file-input-port prettytest.ss)
+          (open-file-input-port prettytest.ss (file-options compressed)))
+     (cmp (open-file-input-port prettytest.ss (file-options compressed))
+          (open-file-input-port prettytest.ss (file-options compressed)))
      (begin
-       (cp (open-file-input-port "prettytest.ss")
+       (cp (open-file-input-port prettytest.ss)
            (open-file-output-port "testfile.ss" (file-options replace compressed)))
        #t)
      (cmp (open-file-input-port "testfile.ss" (file-options compressed))
-          (open-file-input-port "prettytest.ss"))
+          (open-file-input-port prettytest.ss))
      (not (cmp (open-file-input-port "testfile.ss")
-               (open-file-input-port "prettytest.ss")))
+               (open-file-input-port prettytest.ss)))
      (begin
-       (cp (open-file-input-port "prettytest.ss")
+       (cp (open-file-input-port prettytest.ss)
            (open-file-output-port "testfile.ss" (file-options no-fail no-truncate append compressed)))
        #t)
      (not (cmp (open-file-input-port "testfile.ss" (file-options compressed))
-               (open-file-input-port "prettytest.ss")))))
+               (open-file-input-port prettytest.ss)))))
   ; test workaround for bogus gzclose error return for empty input files
   (and
    (eqv? (call-with-port
@@ -3186,24 +3188,24 @@
         (if compressed? (file-options compressed replace) (file-options replace))
         (buffer-mode block)
         (make-transcoder codec)))
-    (time (cmp (in "prettytest.ss" #f (latin-1-codec)) (in "prettytest.ss" #f (latin-1-codec))))
-    (time (cmp (in "prettytest.ss" #t (latin-1-codec)) (in "prettytest.ss" #f (latin-1-codec))))
-    (time (cmp (in "prettytest.ss" #f (latin-1-codec)) (in "prettytest.ss" #t (latin-1-codec))))
-    (time (cmp (in "prettytest.ss" #t (latin-1-codec)) (in "prettytest.ss" #t (latin-1-codec))))
-    (time (cmp (in "prettytest.ss" #f (utf-8-codec)) (in "prettytest.ss" #f (utf-8-codec))))
-    (time (cmp (in "prettytest.ss" #t (utf-8-codec)) (in "prettytest.ss" #f (utf-8-codec))))
-    (time (cmp (in "prettytest.ss" #f (utf-8-codec)) (in "prettytest.ss" #t (utf-8-codec))))
-    (time (cmp (in "prettytest.ss" #t (utf-8-codec)) (in "prettytest.ss" #t (utf-8-codec))))
-    (cp (in "prettytest.ss" #f (latin-1-codec)) (out "testfile.ss" #t (latin-1-codec)))
-    (cmp (in "prettytest.ss" #f (latin-1-codec)) (in "testfile.ss" #t (latin-1-codec)))
-    (cmp (in "prettytest.ss" #t (latin-1-codec)) (in "testfile.ss" #t (latin-1-codec)))
-    (cmp (in "prettytest.ss" #f (utf-8-codec)) (in "testfile.ss" #t (utf-8-codec)))
-    (cmp (in "prettytest.ss" #t (utf-8-codec)) (in "testfile.ss" #t (utf-8-codec)))
-    (cp (in "prettytest.ss" #f (utf-8-codec)) (out "testfile.ss" #t (utf-8-codec)))
-    (cmp (in "prettytest.ss" #f (latin-1-codec)) (in "testfile.ss" #t (latin-1-codec)))
-    (cmp (in "prettytest.ss" #t (latin-1-codec)) (in "testfile.ss" #t (latin-1-codec)))
-    (cmp (in "prettytest.ss" #f (utf-8-codec)) (in "testfile.ss" #t (utf-8-codec)))
-    (cmp (in "prettytest.ss" #t (utf-8-codec)) (in "testfile.ss" #t (utf-8-codec)))
+    (time (cmp (in prettytest.ss #f (latin-1-codec)) (in prettytest.ss #f (latin-1-codec))))
+    (time (cmp (in prettytest.ss #t (latin-1-codec)) (in prettytest.ss #f (latin-1-codec))))
+    (time (cmp (in prettytest.ss #f (latin-1-codec)) (in prettytest.ss #t (latin-1-codec))))
+    (time (cmp (in prettytest.ss #t (latin-1-codec)) (in prettytest.ss #t (latin-1-codec))))
+    (time (cmp (in prettytest.ss #f (utf-8-codec)) (in prettytest.ss #f (utf-8-codec))))
+    (time (cmp (in prettytest.ss #t (utf-8-codec)) (in prettytest.ss #f (utf-8-codec))))
+    (time (cmp (in prettytest.ss #f (utf-8-codec)) (in prettytest.ss #t (utf-8-codec))))
+    (time (cmp (in prettytest.ss #t (utf-8-codec)) (in prettytest.ss #t (utf-8-codec))))
+    (cp (in prettytest.ss #f (latin-1-codec)) (out "testfile.ss" #t (latin-1-codec)))
+    (cmp (in prettytest.ss #f (latin-1-codec)) (in "testfile.ss" #t (latin-1-codec)))
+    (cmp (in prettytest.ss #t (latin-1-codec)) (in "testfile.ss" #t (latin-1-codec)))
+    (cmp (in prettytest.ss #f (utf-8-codec)) (in "testfile.ss" #t (utf-8-codec)))
+    (cmp (in prettytest.ss #t (utf-8-codec)) (in "testfile.ss" #t (utf-8-codec)))
+    (cp (in prettytest.ss #f (utf-8-codec)) (out "testfile.ss" #t (utf-8-codec)))
+    (cmp (in prettytest.ss #f (latin-1-codec)) (in "testfile.ss" #t (latin-1-codec)))
+    (cmp (in prettytest.ss #t (latin-1-codec)) (in "testfile.ss" #t (latin-1-codec)))
+    (cmp (in prettytest.ss #f (utf-8-codec)) (in "testfile.ss" #t (utf-8-codec)))
+    (cmp (in prettytest.ss #t (utf-8-codec)) (in "testfile.ss" #t (utf-8-codec)))
     #t)
   ; test workaround for bogus gzclose error return for empty input files
   (and
@@ -3222,7 +3224,7 @@
   (let ()
     (define pretty-test-string
       (call-with-port
-        (open-file-input-port "prettytest.ss"
+        (open-file-input-port prettytest.ss
           (file-options) (buffer-mode none) (native-transcoder))
         get-string-all))
     (define cp ; doesn't close the ports
@@ -3269,11 +3271,11 @@
         (if compressed? (file-options compressed replace) (file-options replace))
         (buffer-mode block)
         (make-transcoder codec)))
-    (time (cmp (in "prettytest.ss" #f (latin-1-codec)) (open-string-input-port pretty-test-string)))
-    (time (cmp (open-string-input-port pretty-test-string) (in "prettytest.ss" #f (latin-1-codec))))
+    (time (cmp (in prettytest.ss #f (latin-1-codec)) (open-string-input-port pretty-test-string)))
+    (time (cmp (open-string-input-port pretty-test-string) (in prettytest.ss #f (latin-1-codec))))
     (let-values ([(op retrieve) (open-string-output-port)])
       (cp (open-string-input-port pretty-test-string) op)
-      (cmp (in "prettytest.ss" #f (latin-1-codec)) (open-string-input-port (retrieve))))
+      (cmp (in prettytest.ss #f (latin-1-codec)) (open-string-input-port (retrieve))))
     #t)
 )
 
@@ -5006,3 +5008,76 @@
   (error? ($readit #t "#!no-fold-case #\\newLine"))
   (error? ($readit #f "#!no-fold-case #\\newLine"))
 )
+
+(mat print-parameters
+  (error? (print-precision "off"))
+  (error? (print-select-flonum-exponential-format #f))
+  (error? (print-select-flonum-exponential-format 0))
+
+  (equal? (parameterize ([print-subnormal-precision 'anything])
+            (print-subnormal-precision))
+          #t)
+  (equal? (parameterize ([print-positive-exponent-sign 'anything])
+            (print-positive-exponent-sign))
+          #t)
+
+  (equal? (number->string 0.0)
+          "0.0")
+  (equal? (parameterize ([print-precision 32])
+            (number->string 0.0))
+          "0.0|32")
+  (equal? (number->string 3.14)
+          "3.14")
+  (equal? (parameterize ([print-precision 32])
+            (number->string 3.14))
+          "3.14|53")
+  (equal? (number->string 1e-310) "1e-310|45")
+  (equal? (parameterize ([print-subnormal-precision #f])
+            (number->string 1e-310))
+          "1e-310")
+
+  (equal? (number->string 3.2e20)
+          "3.2e20")
+  (equal? (parameterize ([print-positive-exponent-sign #t])
+            (number->string 3.2e20))
+          "3.2e+20")
+
+  (equal? (number->string 1e9)
+          "1000000000.0")
+  (equal? (number->string 1e10)
+          "1e10")
+  (equal? (parameterize ([print-select-flonum-exponential-format (lambda (radix exp n-digits) #f)])
+            (number->string 1e10))
+          "10000000000.0")
+  (equal? (parameterize ([print-select-flonum-exponential-format (lambda (radix exp n-digits) #t)])
+            (number->string 1e2))
+          "1e2")
+  (equal? (parameterize ([print-select-flonum-exponential-format (lambda (radix exp n-digits) #t)])
+            (number->string 0.0))
+          "0e0")
+  (equal? (parameterize ([print-select-flonum-exponential-format (lambda (radix exp n-digits) #t)])
+            (number->string -0.0))
+          "-0e0")
+  (equal? (parameterize ([print-select-flonum-exponential-format (lambda (radix exp n-digits)
+                                                                   (unless (= radix 10) (error 'choose "wrong radix"))
+                                                                   (unless (= exp 0) (error 'choose "wrong exponent"))
+                                                                   (unless (= n-digits 3) (error 'choose "wrong digits"))
+                                                                   #f)])
+            (number->string 3.14))
+          "3.14")
+  (equal? (parameterize ([print-select-flonum-exponential-format (lambda (radix exp n-digits)
+                                                                   (unless (= radix 10) (error 'choose "wrong radix"))
+                                                                   (unless (= exp -5) (error 'choose "wrong exponent"))
+                                                                   (unless (= n-digits 3) (error 'choose "wrong digits"))
+                                                                   #f)])
+            (number->string 314e-7))
+          "0.0000314")
+  (equal? (parameterize ([print-select-flonum-exponential-format (lambda (radix exp n-digits)
+                                                                   (unless (= radix 8) (error 'choose "wrong radix"))
+                                                                   (unless (= exp -5) (error 'choose "wrong exponent"))
+                                                                   (unless (= n-digits 19) (error 'choose "wrong digits ~s" n-digits))
+                                                                   #f)])
+            (number->string 314e-7 8))
+          "0.00001016633744345556774")
+  
+  )

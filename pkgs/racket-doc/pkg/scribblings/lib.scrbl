@@ -160,7 +160,7 @@ scope}.}
 @defproc[(pkg-desc? [v any/c]) boolean?]
 @defproc[(pkg-desc [source string?]
                    [type (or/c #f 'name 'file 'dir 'link 'static-link
-                               'file-url 'dir-url 'git 'github 'clone)]
+                               'file-url 'dir-url 'git 'git-url 'github 'clone)]
                    [name (or/c string? #f)]
                    [checksum (or/c string? #f)]
                    [auto? boolean?]
@@ -179,7 +179,8 @@ directory containing the repository clone (where the repository itself
 is a directory within @racket[path]).
 
 @history[#:changed "6.1.1.1" @elem{Added @racket['git] as a @racket[type].}
-         #:changed "6.1.1.5" @elem{Added @racket['clone] as a @racket[type].}]}
+         #:changed "6.1.1.5" @elem{Added @racket['clone] as a @racket[type].}
+         #:changed "8.0.0.13" @elem{Added @racket['git-url] as a @racket[type].}]}
 
 
 @defproc[(pkg-stage [desc pkg-desc?]
@@ -392,13 +393,20 @@ Implements @racket[pkg-remove-command]. The result is the same as for
 @racket[pkg-install], indicating collects that should be setup via
 @exec{raco setup}.
 
-If @racket[from-command-line?]  is true, error messages may suggest
+If @racket[from-command-line?] is true, the function @racket[pkg-remove]
+may recommend additional instructions for removing automatically installed
+packages in the standard output.
+The error messages can also suggest
 specific command-line flags for @command-ref{remove}.
+
+When @racket[quiet?] is true, the messages in the standard output are suppressed.
 
 The package lock must be held; see @racket[with-pkg-lock].
 
 @history[#:changed "6.1.1.6" @elem{Added the @racket[#:use-trash?] argument.}
-         #:changed "6.4.0.14" @elem{Added the @racket[#:dry-run] argument.}]}
+         #:changed "6.4.0.14" @elem{Added the @racket[#:dry-run] argument.}
+         #:changed "8.6.0.7" @elem{Added the suggestion for removing automatically
+                             installed packages.}]}
 
 
 @defproc[(pkg-new [name path-string?])

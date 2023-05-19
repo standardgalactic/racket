@@ -10,7 +10,8 @@
          "semaphore.rkt"
          "parameter.rkt"
          "sink.rkt"
-         "exit.rkt")
+         "exit.rkt"
+         "error.rkt")
 
 (provide current-custodian
          make-custodian
@@ -33,6 +34,7 @@
          unsafe-custodian-unregister
          custodian-register-thread
          custodian-register-place
+         custodian-register-also
          custodian-shutdown-root-at-exit
          raise-custodian-is-shut-down
          unsafe-add-post-custodian-shutdown
@@ -54,15 +56,18 @@
 ;; For `(struct custodian ...)`, see "custodian-object.rkt"
 
 (struct custodian-box ([v #:mutable] sema)
-  #:authentic
   #:property prop:evt (lambda (cb)
                         (wrap-evt (custodian-box-sema cb) (lambda (v) cb))))
 
-(struct willed-callback (proc will)
+(struct willed-callback (proc will late?)
   #:property prop:procedure (struct-field-index proc)
   #:authentic)
 
 (struct at-exit-callback willed-callback ()
+  #:authentic)
+
+(struct late-callback (proc)
+  #:property prop:procedure (struct-field-index proc)
   #:authentic)
 
 ;; Reporting registration in a custodian through this indirection
@@ -98,7 +103,6 @@
                                           (reference-sink children)
                                           (do-custodian-shutdown-all c)))
                                       #:weak? #t
-                                      #:at-exit? #t
                                       #:gc-root? #t))
   (set-custodian-parent-reference! c cref)
   (unless cref (raise-custodian-is-shut-down who parent))
@@ -113,28 +117,33 @@
 ;; finalizer; in that case, if `obj` is exposed to safe code, it can
 ;; have its own finalizers, but weak boxes or hashtable references will
 ;; not be cleared until the value is explicitly shut down.
+;; The `callback-wrapped?` mode is needed to preserve any existing order
+;; of finalizer callbacks when a custodian is merged into another.
 (define (do-custodian-register cust obj callback
-                               #:at-exit? [at-exit? #f]
-                               #:weak? [weak? #f]
-                               #:late? [late? #f]
+                               #:callback-wrapped? [callback-wrapped? #f]
+                               #:at-exit? [at-exit? #f] ; not used if `callback-wrapped?`
+                               #:weak? [weak? #f]       ; not used if `callback-wrapped?`
+                               #:late? [late? #f]       ; not used if `callback-wrapped?`
                                #:gc-root? [gc-root? #f])
   (atomically
    (cond
      [(custodian-shut-down? cust) #f]
      [else
-      (define we (and (not weak?)
+      (define we (and (not callback-wrapped?)
+                      (not weak?)
                       (if late?
                           ;; caller is responsible for ensuring that a late
                           ;; executor makes sense for `obj` --- especially
                           ;; that it doesn't refer back to itself
-                          (host:make-late-will-executor void)
+                          (host:make-late-will-executor void #f)
                           (host:make-will-executor void))))
       (hash-set! (custodian-children cust)
                  obj
                  (cond
-                   [weak? callback]
-                   [at-exit? (at-exit-callback callback we)]
-                   [else (willed-callback callback we)]))
+                   [callback-wrapped? callback]
+                   [weak? (if late? (late-callback callback) callback)]
+                   [at-exit? (at-exit-callback callback we late?)]
+                   [else (willed-callback callback we late?)]))
       (when we
         ;; Registering with a will executor that we retain but never
         ;; poll has the effect of turning a semi-weak reference
@@ -164,6 +173,12 @@
 (define (custodian-register-place cust obj callback)
   (do-custodian-register cust obj callback #:weak? #t #:gc-root? #t))
 
+(define (custodian-register-also cref obj callback at-exit? weak?)
+  (assert-atomic-mode)
+  (define c (custodian-reference->custodian cref))
+  (unless (hash-ref (custodian-children c) obj #f)
+    (unsafe-custodian-register c obj callback at-exit? weak?)))
+
 (define (unsafe-custodian-unregister obj cref)
   (when cref
     (atomically
@@ -189,14 +204,9 @@
     (for ([(child callback) (in-hash (custodian-children c) #f)])
       (when child
         (define gc-root? (and gc-roots (hash-ref gc-roots child #f) #t))
-        (cond
-          [(willed-callback? callback)
-           (do-custodian-register parent child (willed-callback-proc callback)
-                                  #:at-exit? (at-exit-callback? callback)
-                                  #:gc-root? gc-root?)]
-          [else
-           (do-custodian-register parent child callback
-                                  #:gc-root? gc-root?)])))
+        (do-custodian-register parent child callback
+                               #:gc-root? gc-root?
+                               #:callback-wrapped? #t)))
     (define self-ref (custodian-self-reference c))
     (when self-ref
       (set-custodian-reference-weak-c! self-ref (custodian-self-reference parent)))
@@ -269,7 +279,7 @@
                       #:unless (custodian-this-place? c))
              (when (eq? (custodian-need-shutdown c) 'needed)
                ;; Make sure custodian's place is polling for shutdowns:
-               (set-custodian-need-shutdown! c 'neeed/sent-wakeup)
+               (set-custodian-need-shutdown! c 'needed/sent-wakeup)
                (place-wakeup (custodian-place c)))
              c))
      (host:mutex-release memory-limit-lock)    
@@ -309,12 +319,17 @@
     (when (custodian-sync-futures? c)
       (futures-sync-for-custodian-shutdown))
     (for ([(child callback) (in-hash (custodian-children c) #f)])
-      (when (and child
-                 (or (not only-at-exit?)
-                     (at-exit-callback? callback)))
-        (if (procedure-arity-includes? callback 2)
-            (callback child c)
-            (callback child))))
+      (when child
+        (cond
+          [(and only-at-exit?
+                (custodian? child))
+           ;; propagate `only-at-exit?`
+           (do-custodian-shutdown-all child #t)]
+          [(or (not only-at-exit?)
+               (at-exit-callback? callback))
+           (if (procedure-arity-includes? callback 2)
+               (callback child c)
+               (callback child))])))
     (hash-clear! (custodian-children c))
     (when (custodian-gc-roots c)
       (hash-clear! (custodian-gc-roots c)))
@@ -393,7 +408,7 @@
   (check who exact-nonnegative-integer? need-amt)
   (check who custodian? stop-cust)
   (raise (exn:fail:unsupported
-          "custodian-require-memory: unsupported"
+          (error-message->string 'custodian-require-memory "unsupported")
           (current-continuation-marks))))
 
 (define/who (custodian-limit-memory limit-cust need-amt [stop-cust limit-cust])
@@ -563,7 +578,7 @@
                          (loop (cdr roots) even-more-local-roots accum-roots accum-custs)]))))
                 (call-with-size-increments
                  roots custs
-                 (lambda (sizes custs)
+                 (lambda (sizes custs) ; received `custs` may be shorter than provided `custs`
                    (for ([size (in-list sizes)]
                          [c (in-list custs)])
                      (set-custodian-memory-use! c (+ size (custodian-memory-use c))))
@@ -639,13 +654,14 @@
             (custodian-memory-use c)]))))
 
 (define (custodian-check-immediate-limit mref n)
-  (let loop ([mref mref])
-    (when mref
-      (define c (custodian-reference->custodian mref))
-      (when c
-        (define limit (custodian-immediate-limit c))
-        (when (and limit (n . >= . limit))
-          (raise (exn:fail:out-of-memory
-                  "out of memory"
-                  (current-continuation-marks))))
-        (loop (custodian-parent-reference c))))))
+  (unless (in-atomic-mode?)
+    (let loop ([mref mref])
+      (when mref
+        (define c (custodian-reference->custodian mref))
+        (when c
+          (define limit (custodian-immediate-limit c))
+          (when (and limit (n . >= . limit))
+            (raise (exn:fail:out-of-memory
+                    (error-message->string #f "out of memory")
+                    (current-continuation-marks))))
+          (loop (custodian-parent-reference c)))))))

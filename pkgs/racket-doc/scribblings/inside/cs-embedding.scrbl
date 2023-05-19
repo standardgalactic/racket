@@ -2,7 +2,7 @@
 @(require "utils.rkt"
           scribble/bnf)
 
-@title[#:tag "cs-embedding"]{Embedding into a Program}
+@cs-title[#:tag "cs-embedding"]{Embedding into a Program}
 
 @section-index["embedding Racket CS"]
 
@@ -21,7 +21,8 @@ To embed Racket CS in a program, follow these steps:
   @filepath{libracketcs@italic{x}.dll} must be moved to a location in
   the standard DLL search path, or your embedding application must
   ``delayload'' link the DLLs and explicitly load them before use.
-  (@filepath{Racket.exe} uses the latter strategy.)
+  (@filepath{Racket.exe} uses the latter strategy.) See also
+  @secref["link-dll"].
 
   On Mac OS, besides @as-index{@filepath{libracketcs.a}} for static
   linking, a dynamic library is provided by the @filepath{Racket}
@@ -68,7 +69,7 @@ To embed Racket CS in a program, follow these steps:
      a separator).}
      
      @item{@cpp{boot3_path} --- a path to @filepath{racket.boot}
-     (which a separator).}
+     (with a separator).}
 
   ]
 
@@ -84,7 +85,9 @@ To embed Racket CS in a program, follow these steps:
   offset of each boot image in the file.
 
   See @secref["segment-ideas"] for advice on embedding files like
-  @filepath{petite.boot} in an executable.}
+  @filepath{petite.boot} in an executable, or consider using
+  @cpp{racket_get_self_exe_path} and @cpp{racket_path_replace_filename}
+  to build paths that are relative to the executable.}
 
  @item{Configure the main thread's namespace by adding module
   declarations. The initial namespace contains declarations only for a

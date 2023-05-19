@@ -439,8 +439,8 @@
   (with-read-char c
     (state-case c
       [eof (with-unread-char c (xcall rd-eof-error "# prefix"))]
-      [(#\f #\F) (xcall rd-token-delimiter #f "boolean")]
-      [(#\t #\T) (xcall rd-token-delimiter #t "boolean")]
+      [(#\f #\F) (*state rd-token-boolean #f)]
+      [(#\t #\T) (*state rd-token-boolean #t)]
       [#\\ (*state rd-token-char)]
       [#\( (state-return vparen #f)] ;) for paren bouncer
       [#\' (state-return quote 'syntax)]
@@ -475,6 +475,31 @@
                  (state-return atomic (maybe-fold/gensym (rcb-ip rcb) tb n slashed?)))))]
       [#\| (*state rd-token-block-comment 0)]
       [else (xcall rd-error #f #t "invalid sharp-sign prefix #~c" c)])))
+
+(define-state (rd-token-boolean x)
+  (with-peek-char c
+    (state-case c
+      [eof (state-return atomic x)]
+      [char-alphabetic?
+       ;; Trying to specify a R7RS boolean.
+       (let* ([s (if x "true" "false")]
+              [last-index (fx- (string-length s) 1)])
+         (*state rd-token-boolean-rest x s 1 last-index))]
+      [else (*state rd-token-delimiter x "boolean")])))
+
+(define-state (rd-token-boolean-rest x s i last-index)
+  (with-read-char c
+    (cond
+      [(eof-object? c)
+        ;; we ruled out a possible initial eof before, so it is always an error, here
+        (with-unread-char c (xcall rd-eof-error "boolean"))]
+      [(not (char-ci=? c (string-ref s i)))
+       (with-unread-char c
+         (xcall rd-error #f #t "invalid boolean #~a~c" (substring s 0 i) (char-downcase c)))]
+      [(fx= i last-index)
+       (nonstandard "alternative boolean")
+       (*state rd-token-delimiter x "boolean")]
+      [else (*state rd-token-boolean-rest x s (fx+ i 1) last-index)])))
 
 (define-state (rd-token-delimiter x what)
   (with-peek-char c
@@ -726,7 +751,7 @@
           (state-case c
             [eof
              (with-unread-char c
-               (if (valid-prefix? s '("fx" "u8"))
+               (if (valid-prefix? s '("fx" "fl" "u8" "s"))
                    (xcall rd-eof-error "#v prefix")
                    (xcall rd-error #f #t "invalid syntax #v~a" s)))]
             [#\( ;)
@@ -734,9 +759,10 @@
                [(string=? s "fx") (nonstandard "#vfx(...) fxvector") (state-return vfxparen #f)]
                [(string=? s "fl") (nonstandard "#vfl(...) flvector") (state-return vflparen #f)]
                [(string=? s "u8") (state-return vu8paren #f)]
+               [(string=? s "s") (nonstandard "#vs(...) stencil vector") (state-return vsparen #f)]
                [else (xcall rd-error #f #t "invalid syntax #v~a(" s)])] ;)
             [else
-             (if (valid-prefix? s '("fx" "u8"))
+             (if (valid-prefix? s '("fx" "fl" "u8" "s"))
                  (xcall rd-error #f #t "expected left paren after #v~a prefix" s)
                  (xcall rd-error #f #t "invalid syntax #v~a~a" s c))]))))))
 
@@ -756,6 +782,7 @@
                [(string=? s "fx") (nonstandard "#<n>vfx(...) fxvector") (state-return vfxnparen nelts)]
                [(string=? s "fl") (nonstandard "#<n>vfl(...) flvector") (state-return vflnparen nelts)]
                [(string=? s "u8") (nonstandard "#<n>vu8(...) bytevector") (state-return vu8nparen nelts)]
+               [(string=? s "s") (nonstandard "#<n>vs(...) stencil vector") (state-return vsnparen nelts)]
                [else (xcall rd-error #f #t "invalid syntax #~v,'0dv~a(" (- preflen 1) nelts s)])] ;)
             [else
              (if (valid-prefix? s '("fx" "u8"))
@@ -1116,7 +1143,7 @@
              (rd-fix-graph (vector-ref x m) rd-set-vector-tail! x m))))]
       [($record? x)
        (let ((d ($record-type-descriptor x)))
-         (do ([fields (csv7:record-type-field-indices d) (cdr fields)]
+         (do ([fields (csv7:record-type-field-names d) (cdr fields)]
               [i 0 (+ i 1)])
              ((null? fields))
            (when (csv7:record-field-accessible? d i)
@@ -1140,7 +1167,7 @@
           (let* ((dr (car wl))
                  (rtd (delayed-record-rtd dr))
                  (vals (delayed-record-vals dr))
-                 (fields (csv7:record-type-field-indices rtd)))
+                 (fields (csv7:record-type-field-names rtd)))
             (if (andmap
                   (lambda (f v)
                     (or (not (delayed-record? v))
@@ -1184,6 +1211,8 @@
     [(vflnparen) (xmvlet ((v) (xcall rd-sized-flvector value)) (xvalues v v))]
     [(vu8paren) (xmvlet ((v) (xcall rd-bytevector bfp 0)) (xvalues v v))]
     [(vu8nparen) (xmvlet ((v) (xcall rd-sized-bytevector value)) (xvalues v v))]
+    [(vsparen) (xcall rd-error #f #t "mask required for stencil vector")]
+    [(vsnparen) (xcall rd-stencil-vector value)]
     [(box) (xcall rd-box)]
     [(fasl)
      (xcall rd-error #f #t
@@ -1396,6 +1425,29 @@
          (and stripped-v (vector-set! stripped-v i stripped-x))
          (xcall rd-fill-vector expr-bfp v stripped-v (fx+ i 1) n))])))
 
+(xdefine (rd-stencil-vector m)
+  (unless (and (fixnum? m) (fxnonnegative? m) (fx< m (fxsll 1 (constant stencil-vector-mask-bits))))
+    (let ([bfp (and bfp (+ bfp 1))] [fp (and fp (- fp 1))])
+      (xcall rd-error #f #t "invalid stencil vector mask ~s" m)))
+  (xcall rd-fill-stencil-vector bfp ($make-empty-stencil-vector m) (and (rcb-a? rcb) ($make-empty-stencil-vector m)) 0 (fxpopcount m)))
+
+(xdefine (rd-fill-stencil-vector expr-bfp v stripped-v i n)
+  (with-token (type value)
+    (case type
+      [(rparen)
+       (when (fx< i n)
+         (xcall rd-error #f #t "not enough stencil vector elements supplied"))
+       (xvalues v stripped-v)]
+      [(eof) (let ([bfp expr-bfp]) (xcall rd-eof-error "stencil vector"))]
+      [else
+       (xmvlet ((x stripped-x) (xcall rd type value))
+         (unless (fx< i n)
+           (let ([bfp expr-bfp])
+             (xcall rd-error #f #t "too many stencil vector elements supplied")))
+         (stencil-vector-set! v i x)
+         (and stripped-v (stencil-vector-set! stripped-v i stripped-x))
+         (xcall rd-fill-stencil-vector expr-bfp v stripped-v (fx+ i 1) n))])))
+
 ;; an fxvector contains a sequence of fixnum tokens.  we don't handle
 ;; graph marks and references because to do so generally, we'd have to
 ;; put non-fixnums (insert records) into the fxvector or perhaps
@@ -1490,11 +1542,16 @@
       [(rparen) (xvalues (make-bytevector i))]
       [(eof) (let ([bfp expr-bfp]) (xcall rd-eof-error "bytevector"))]
       [else
-       (unless (and (eq? type 'atomic) (fixnum? value) (fx<= 0 value 255))
-         (xcall rd-error #f #t "invalid value ~s found in bytevector" value))
+       (xcall rd-bytevector-check type value)
        (xmvlet ((v) (xcall rd-bytevector expr-bfp (fx+ i 1)))
          (bytevector-u8-set! v i value)
          (xvalues v))])))
+
+(xdefine (rd-bytevector-check type value)
+  (unless (and (eq? type 'atomic) (fixnum? value) (fx<= 0 value 255))
+    (if (eq? type 'atomic)
+        (xcall rd-error #f #t "invalid value ~:[~s~;~a~] found in bytevector" (symbol? value) value)
+        (xcall rd-error #f #t "non-octet found in bytevector"))))
 
 (xdefine (rd-sized-bytevector n)
   (unless (and (fixnum? n) (fxnonnegative? n))
@@ -1514,8 +1571,7 @@
        (xvalues v)]
       [(eof) (let ([bfp expr-bfp]) (xcall rd-eof-error "bytevector"))]
       [else
-       (unless (and (eq? type 'atomic) (fixnum? value) (fx<= 0 value 255))
-         (xcall rd-error #f #t "invalid value ~s found in bytevector" value))
+       (xcall rd-bytevector-check type value)
        (unless (fx< i n)
          (let ([bfp expr-bfp])
            (xcall rd-error #f #t "too many bytevector elements supplied")))
@@ -1671,12 +1727,7 @@
                  (let ([dir (car dir*)])
                    (if (or (string=? dir "") (string=? dir "."))
                        name
-                       (format (if (directory-separator?
-                                     (string-ref dir
-                                       (fx- (string-length dir) 1)))
-                                   "~a~a"
-                                   "~a/~a")
-                         dir name))))
+                       (path-build dir name))))
                (search name (cdr dir*)))))
     (let ([name (source-file-descriptor-name sfd)])
       (and (string? name)
@@ -1854,7 +1905,6 @@
       (unless (and (list? x) (andmap string? x))
         ($oops 'source-directories "invalid path list ~s" x))
       x)))
-
 
 (define record-reader
   (case-lambda

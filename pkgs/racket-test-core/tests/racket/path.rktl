@@ -12,6 +12,10 @@
 (test #t path<? (bytes->path #"a") (bytes->path #"aa"))
 (test #f path<? (bytes->path #"aa") (bytes->path #"a"))
 
+(test #f equal? (bytes->path #"a" 'unix) (bytes->path #"a" 'windows))
+(test #t equal? (bytes->path #"a" 'unix) (bytes->path #"a" 'unix))
+(test #t equal? (bytes->path #"a" 'windows) (bytes->path #"a" 'windows))
+
 (define (test-basic-extension path-replace-extension
                               path-add-extension)
   (test (string->path "x.zo") path-replace-extension "x.rkt" ".zo")
@@ -191,6 +195,33 @@
 (err/rt-test (copy-file "tmp5" "tmp5y") exn:fail:filesystem:exists?)
 (err/rt-test (copy-file "no-such-tmp5" "tmp5y") (lambda (x) (not (exn:fail:filesystem:exists? x))))
 (delete-file "tmp5y")
+
+(define (copy-file* src dest [exists-ok? #f] [permissions #f] [replace-perms? #t])
+  (if (zero? (random 2))
+      (copy-file src dest
+                 exists-ok? ; by-position argument
+                 #:permissions permissions
+                 #:replace-permissions? replace-perms?)
+      (copy-file src dest
+                 #:exists-ok? exists-ok?
+                 #:permissions permissions
+                 #:replace-permissions? replace-perms?)))
+
+(define copy-file*/tf (make-/tf copy-file* exn:fail:filesystem?))
+(test #t copy-file*/tf "tmp5" "tmp5y")
+(test #t copy-file*/tf "tmp5" "tmp5y" #t)
+(test (file-or-directory-permissions "tmp5") file-or-directory-permissions "tmp5y")
+(test #t copy-file*/tf "tmp5" "tmp5y" #t #o111)
+(test (if (eq? 'windows (system-type)) #o555 #o111) file-or-directory-permissions "tmp5y" 'bits)
+(delete-file "tmp5y")
+(test #t copy-file*/tf "tmp5" "tmp5y" #f #o666)
+(test (if (eq? 'windows (system-type)) #o777 #o666) file-or-directory-permissions "tmp5y" 'bits)
+(unless (eq? 'windows (system-type))
+  (test #t copy-file*/tf "tmp5" "tmp5y" #t #f #f) ; don't replace existing file's permissions
+  (test #o666 file-or-directory-permissions "tmp5y" 'bits))
+(delete-file "tmp5y")
+(err/rt-test (copy-file "tmp5" "tmp5y" #t #:exists-ok? #t) exn:fail? "both")
+(err/rt-test (copy-file "tmp5" "tmp5y" #f #:exists-ok? #f) exn:fail? "both")
 
 (test #t rename-file-or-directory/tf "tmp5" "tmp5x")
 (test #f rename-file-or-directory/tf "tmp5" "tmp5x")
@@ -912,7 +943,8 @@
          
          [bytes->path-element (if use-fs?
                                   bytes->path-element
-                                  (lambda (s) (bytes->path-element s kind)))])
+                                  (lambda (s [other-kind #f] [non-element-false? #f])
+                                    (bytes->path-element s kind non-element-false?)))])
     (test #t relative-path? (bytes->path #"./~"))
     (test (bytes->path #"~") bytes->path-element #"~")
     (test #"~" path-element->bytes (bytes->path #"~"))
@@ -929,6 +961,10 @@
     (err/rt-test (bytes->path-element #"x/y"))
     (err/rt-test (bytes->path-element #"/x"))
     (err/rt-test (bytes->path-element #"/"))
+    (err/rt-test (bytes->path-element #"_\0_"))
+    (test #f bytes->path-element #"x/y" (system-path-convention-type) #t)
+    (test #f bytes->path-element #"/" (system-path-convention-type) #t)
+    (err/rt-test (bytes->path-element #"_\0_" (system-path-convention-type) #t))
     (unless use-fs?
       (test (bytes->path #"~") simplify-path (bytes->path #"~") use-fs?)
       (test (bytes->path #"~/") simplify-path (bytes->path #"~/") use-fs?)
@@ -944,6 +980,8 @@
     (test (bytes->path #"../") simplify-path (bytes->path #"../") #f)
     (test (bytes->path #"../") simplify-path (bytes->path #"..//") #f)
     (test (bytes->path #"../") simplify-path (bytes->path #"..//./") #f)
+    (test (bytes->path #"/x") simplify-path (bytes->path #"/../../x") #f)
+    (test (bytes->path #"/") simplify-path (bytes->path #"/x/../..") #f)
     (test (bytes->path #"x/") path->directory-path (bytes->path #"x"))
     (test (bytes->path #"x/") path->directory-path (bytes->path #"x/"))
     (test (bytes->path #"x/./") path->directory-path (bytes->path #"x/."))
@@ -1013,6 +1051,16 @@
 
 (err/rt-test (bytes->path-element #""))
 (err/rt-test (string->path-element ""))
+(err/rt-test (string->path-element "a\0b"))
+
+(err/rt-test (bytes->path-element #"" (system-path-convention-type) #t))
+(err/rt-test (string->path-element "" (system-path-convention-type) #t))
+(err/rt-test (string->path-element "a\0b" #t))
+
+(test (bytes->path #"\\\\?\\REL\\\\a/b" 'windows) bytes->path-element #"a/b" 'windows #t)
+(if (eq? 'windows (system-path-convention-type))
+    (test (bytes->path #"\\\\?\\REL\\\\a/b") string->path-element "a/b" #t)
+    (test #f string->path-element "a/b" #t))
 
 (test #"\\\\?\\REL\\\\a/b" path->bytes (bytes->path-element #"a/b" 'windows))
 
@@ -1042,6 +1090,18 @@
   (test "\\\\?\\q:\\tmp\\b\\c\\x/y" reroot-path/w "\\\\?\\c:\\x/y" "q:/tmp/b")
   (test "\\\\?\\q:\\tmp\\b\\UNC\\machine\\path\\x/y\\z" 
         reroot-path/w "\\\\?\\UNC\\machine\\path\\x/y\\z" "q:/tmp/b"))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; make sure `path-list-string->path-list` can deal with
+;; bytes that (likely) don't fit into the current locale's encoding
+
+(test (list (bytes->path #"a\200c")
+            (bytes->path #"def"))
+      path-list-string->path-list
+      (if (eq? (system-type) 'windows)
+          #"a\200c;def"
+          #"a\200c:def")
+      null)
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

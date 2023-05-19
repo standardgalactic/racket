@@ -3,11 +3,6 @@
 
 @title[#:tag "hashtables"]{Hash Tables}
 
-@(define (concurrency-caveat)
-  @elemref['(caveat "concurrency")]{caveats concerning concurrent modification})
-@(define (mutable-key-caveat)
-  @elemref['(caveat "mutable-keys")]{caveat concerning mutable keys})
-
 @(define (see-also-caveats)
    @t{See also the @concurrency-caveat[] and the @mutable-key-caveat[] above.})
 @(define (see-also-concurrency-caveat)
@@ -19,14 +14,15 @@
 
 A @deftech{hash table} (or simply @deftech{hash}) maps each of its
 keys to a single value. For a given hash table, keys are equivalent
-via @racket[equal?], @racket[eqv?], or @racket[eq?], and keys are
-retained either strongly or weakly (see @secref["weakbox"]). A hash
-table is also either mutable or immutable. Immutable hash tables
-support effectively constant-time access and update, just like mutable
-hash tables; the constant on immutable operations is usually larger,
-but the functional nature of immutable hash tables can pay off in
-certain algorithms. Use @racket[immutable?] to check whether a hash
-table is immutable.
+via @racket[equal?], @racket[equal-always?], @racket[eqv?], or
+@racket[eq?], and keys are retained either strongly, weakly
+(see @secref["weakbox"]), or like @tech{ephemerons}.
+A hash table is also either mutable or immutable.
+Immutable hash tables support effectively constant-time access and
+update, just like mutable hash tables; the constant on immutable
+operations is usually larger, but the functional nature of immutable
+hash tables can pay off in certain algorithms. Use @racket[immutable?]
+to check whether a hash table is immutable.
 
 @margin-note{Immutable hash tables actually provide @math{O(log N)}
 access and update. Since @math{N} is limited by the address space so
@@ -53,11 +49,12 @@ table during iteration, then an iteration step may fail with
 keys and values.  See also @racket[in-hash], @racket[in-hash-keys],
 @racket[in-hash-values], and @racket[in-hash-pairs].
 
-Two hash tables cannot be @racket[equal?] unless they use the same
-key-comparison procedure (@racket[equal?], @racket[eqv?], or
-@racket[eq?]), both hold keys strongly or weakly, and have the same
-mutability. Empty immutable hash tables are @racket[eq?] when they
-are @racket[equal?].
+Two hash tables cannot be @racket[equal?] unless they have the same
+mutability, use the same key-comparison procedure (@racket[equal?],
+@racket[equal-always?], @racket[eqv?], or @racket[eq?]), both hold
+keys strongly, weakly, or like @tech{ephemerons}.
+Empty immutable hash tables are @racket[eq?]
+when they are @racket[equal?].
 
 @history[#:changed "7.2.0.9" @elem{Made empty immutable hash tables
                                    @racket[eq?] when they are
@@ -67,18 +64,21 @@ are @racket[equal?].
 modification:}} A mutable hash table can be manipulated with
 @racket[hash-ref], @racket[hash-set!], and @racket[hash-remove!]
 concurrently by multiple threads, and the operations are protected by
-a table-specific semaphore as needed. Three caveats apply, however:
+a table-specific semaphore as needed. Several caveats apply, however:
 
  @itemize[
 
   @item{If a thread is terminated while applying @racket[hash-ref],
   @racket[hash-ref-key], @racket[hash-set!], @racket[hash-remove!],
-  @racket[hash-ref!], or @racket[hash-update!] to a hash table that
-  uses @racket[equal?] or @racket[eqv?] key comparisons, all current
-  and future operations on the hash table may block indefinitely.}
+  @racket[hash-ref!], @racket[hash-update!], or @racket[hash-clear!]
+  to a hash table that
+  uses @racket[equal?], @racket[equal-always?], or @racket[eqv?] key
+  comparisons, all current and future operations on the hash table may
+  block indefinitely.}
 
   @item{The @racket[hash-map], @racket[hash-for-each], and @racket[hash-clear!] procedures do
-  not use the table's semaphore to guard the traversal as a whole.
+  not use the table's semaphore to guard the traversal as a whole
+  (if a traversal is needed, in the case of @racket[hash-clear!]).
   Changes by one thread to a hash table can affect the keys and values
   seen by another thread part-way through its traversal of the same
   hash table.}
@@ -89,6 +89,13 @@ a table-specific semaphore as needed. Three caveats apply, however:
  of their functionality, which means that the update as a whole is not
  ``atomic.''}
 
+ @item{Adding a mutable hash table as a key in itself is trouble on
+  the grounds that the key is being mutated (see the caveat below),
+  but it is also a kind of concurrent use of the hash table: computing
+  a hash table's hash code may require waiting on the table's
+  semaphore, but the semaphore is already held for modifying the hash
+  table, so the hash-table addition can block indefinitely.}
+
  ]
 
 @elemtag['(caveat "mutable-keys")]{@bold{Caveat concerning mutable
@@ -98,39 +105,72 @@ hash table's behavior for insertion and lookup operations becomes
 unpredictable.
 
 A literal or printed hash table starts with @litchar{#hash},
-@litchar{#hasheqv}, or
+@litchar{#hashalw}, @litchar{#hasheqv}, or
 @litchar{#hasheq}. @see-read-print["hashtable"]{hash tables}
 
 @defproc[(hash? [v any/c]) boolean?]{
 
 Returns @racket[#t] if @racket[v] is a @tech{hash table}, @racket[#f]
-otherwise.}
+otherwise.
+
+See also @racket[immutable-hash?] and @racket[mutable-hash?].}
 
 @defproc[(hash-equal? [hash hash?]) boolean?]{
 
 Returns @racket[#t] if @racket[hash] compares keys with @racket[equal?],
-@racket[#f] if it compares with @racket[eq?] or @racket[eqv?].}
+@racket[#f] if it compares with @racket[eq?], @racket[eqv?], or
+@racket[equal-always?].}
+
+@defproc[(hash-equal-always? [hash hash?]) boolean?]{
+
+Returns @racket[#t] if @racket[hash] compares keys with
+@racket[equal-always?], @racket[#f] if it compares with @racket[eq?],
+@racket[eqv?], or @racket[equal?].
+
+@history[#:added "8.5.0.3"]}
 
 @defproc[(hash-eqv? [hash hash?]) boolean?]{
 
 Returns @racket[#t] if @racket[hash] compares keys with @racket[eqv?],
-@racket[#f] if it compares with @racket[equal?] or @racket[eq?].}
+@racket[#f] if it compares with @racket[equal?],
+@racket[equal-always?], or @racket[eq?].}
 
 @defproc[(hash-eq? [hash hash?]) boolean?]{
 
 Returns @racket[#t] if @racket[hash] compares keys with @racket[eq?],
-@racket[#f] if it compares with @racket[equal?] or @racket[eqv?].}
+@racket[#f] if it compares with @racket[equal?],
+@racket[equal-always?], or @racket[eqv?].}
+
+
+@defproc[(hash-strong? [hash hash?]) boolean?]{
+
+Returns @racket[#t] if @racket[hash] retains its keys strongly,
+@racket[#f] if it retains keys weakly or like @tech{ephemerons}.
+
+@history[#:added "8.0.0.10"]}
 
 
 @defproc[(hash-weak? [hash hash?]) boolean?]{
 
 Returns @racket[#t] if @racket[hash] retains its keys weakly,
-@racket[#f] if it retains keys strongly.}
+@racket[#f] if it retains keys strongly or like @tech{ephemerons}.}
+
+
+@defproc[(hash-ephemeron? [hash hash?]) boolean?]{
+
+Returns @racket[#t] if @racket[hash] retains its keys like
+@tech{ephemerons}, @racket[#f] if it retains keys strongly or merely
+weakly.
+
+@history[#:added "8.0.0.10"]}
+
 
 @deftogether[(
-@defproc[(hash [key any/c] [val any/c] ... ...) (and/c hash? hash-equal? immutable?)]
-@defproc[(hasheq [key any/c] [val any/c] ... ...) (and/c hash? hash-eq? immutable?)]
-@defproc[(hasheqv [key any/c] [val any/c] ... ...) (and/c hash? hash-eqv? immutable?)]
+@defproc[(hash [key any/c] [val any/c] ... ...) (and/c hash? hash-equal? immutable? hash-strong?)]
+@defproc[(hashalw [key any/c] [val any/c] ... ...)
+         (and/c hash? hash-equal-always? immutable? hash-strong?)]
+@defproc[(hasheq [key any/c] [val any/c] ... ...) (and/c hash? hash-eq? immutable? hash-strong?)]
+@defproc[(hasheqv [key any/c] [val any/c] ... ...) (and/c hash? hash-eqv? immutable? hash-strong?)]
 )]{
 
 Creates an immutable hash table with each given @racket[key] mapped to
@@ -138,27 +178,33 @@ the following @racket[val]; each @racket[key] must have a @racket[val],
 so the total number of arguments to @racket[hash] must be even.
 
 The @racket[hash] procedure creates a table where keys are compared
-with @racket[equal?], @racket[hasheq] procedure creates a table where
-keys are compared with @racket[eq?], and @racket[hasheqv] procedure
+with @racket[equal?], @racket[hashalw] creates a table where keys are compared with
+@racket[equal-always?], @racket[hasheq] procedure creates a table where
+keys are compared with @racket[eq?], @racket[hasheqv] procedure
 creates a table where keys are compared with @racket[eqv?].
 
 The @racket[key] to @racket[val] mappings are added to the table in
 the order that they appear in the argument list, so later mappings can
-hide earlier mappings if the @racket[key]s are equal.}
+hide earlier mappings if the @racket[key]s are equal.
+
+@history[#:changed "8.5.0.3" @elem{Added @racket[hashalw].}]}
 
 @deftogether[(
-@defproc[(make-hash [assocs (listof pair?) null]) (and/c hash? hash-equal?)]
-@defproc[(make-hasheqv [assocs (listof pair?) null]) (and/c hash? hash-eqv?)]
-@defproc[(make-hasheq [assocs (listof pair?) null]) (and/c hash? hash-eq?)]
+@defproc[(make-hash [assocs (listof pair?) null]) (and/c hash? hash-equal? (not/c immutable?) hash-strong?)]
+@defproc[(make-hashalw [assocs (listof pair?) null])
+         (and/c hash? hash-equal-always? (not/c immutable?) hash-strong?)]
+@defproc[(make-hasheqv [assocs (listof pair?) null]) (and/c hash? hash-eqv? (not/c immutable?) hash-strong?)]
+@defproc[(make-hasheq [assocs (listof pair?) null]) (and/c hash? hash-eq? (not/c immutable?) hash-strong?)]
 )]{
 
 Creates a mutable hash table that holds keys strongly. 
 
 The @racket[make-hash] procedure creates a table where keys are
 compared with @racket[equal?], @racket[make-hasheq] procedure creates
-a table where keys are compared with @racket[eq?], and
+a table where keys are compared with @racket[eq?],
 @racket[make-hasheqv] procedure creates a table where keys are
-compared with @racket[eqv?].
+compared with @racket[eqv?], and @racket[make-hashalw] creates a table
+where keys are compared with @racket[equal-always?].
 
 The table is initialized with the content of @racket[assocs].  In each
 element of @racket[assocs], the @racket[car] is a key, and the
@@ -166,43 +212,79 @@ element of @racket[assocs], the @racket[car] is a key, and the
 table in the order that they appear in @racket[assocs], so later
 mappings can hide earlier mappings.
 
-See also @racket[make-custom-hash].}
+See also @racket[make-custom-hash].
+
+@history[#:changed "8.5.0.3" @elem{Added @racket[make-hashalw].}]}
 
 @deftogether[(
-@defproc[(make-weak-hash [assocs (listof pair?) null]) (and/c hash? hash-equal? hash-weak?)]
-@defproc[(make-weak-hasheqv [assocs (listof pair?) null]) (and/c hash? hash-eqv? hash-weak?)]
-@defproc[(make-weak-hasheq [assocs (listof pair?) null]) (and/c hash? hash-eq? hash-weak?)]
+@defproc[(make-weak-hash [assocs (listof pair?) null]) (and/c hash? hash-equal? (not/c immutable?) hash-weak?)]
+@defproc[(make-weak-hashalw [assocs (listof pair?) null])
+         (and/c hash? hash-equal-always? (not/c immutable?) hash-weak?)]
+@defproc[(make-weak-hasheqv [assocs (listof pair?) null]) (and/c hash? hash-eqv? (not/c immutable?) hash-weak?)]
+@defproc[(make-weak-hasheq [assocs (listof pair?) null]) (and/c hash? hash-eq? (not/c immutable?) hash-weak?)]
 )]{
 
-Like @racket[make-hash], @racket[make-hasheq], and
-@racket[make-hasheqv], but creates a mutable hash table that holds
-keys weakly.
+Like @racket[make-hash], @racket[make-hasheq],
+@racket[make-hasheqv], and @racket[make-hashalw], but creates a
+mutable hash table that holds keys weakly.
 
-Beware that values in the table are retained normally. If a value in
+Beware that values in a weak hash table are retained normally. If a value in
 the table refers back to its key, then the table will retain the value
 and therefore the key; the mapping will never be removed from the
 table even if the key becomes otherwise inaccessible. To avoid that
-problem, instead of mapping the key to the value, map the key to an
-@tech{ephemeron} that pairs the key and value. Beware further,
-however, that an ephemeron's value might be cleared between retrieving
-an ephemeron and extracting its value, depending on whether the key is
-otherwise reachable. For @racket[eq?]-based mappings, consider using
-the pattern @racket[(ephemeron-value _ephemeron #f _key)] to extract
-the value of @racket[_ephemeron] while ensuring that @racket[_key] is
-retained until the value is extracted.}
+problem, use an ephemeron hash table as created by
+@racket[make-ephemeron-hash], @racket[make-ephemeron-hashalw],
+@racket[make-ephemeron-hasheqv], or @racket[make-ephemeron-hasheq].
+For values that do not refer to keys,
+there is a modest extra cost to using an ephemeron hash table instead
+of a weak hash table, but prefer an ephemeron hash table when in
+doubt.
+
+@history[#:changed "8.5.0.3" @elem{Added @racket[make-weak-hashalw].}]}
+
+
+@deftogether[(
+@defproc[(make-ephemeron-hash [assocs (listof pair?) null]) (and/c hash? hash-equal? (not/c immutable?) hash-ephemeron?)]
+@defproc[(make-ephemeron-hashalw [assocs (listof pair?) null])
+         (and/c hash? hash-equal-always? (not/c immutable?) hash-ephemeron?)]
+@defproc[(make-ephemeron-hasheqv [assocs (listof pair?) null]) (and/c hash? hash-eqv? (not/c immutable?) hash-ephemeron?)]
+@defproc[(make-ephemeron-hasheq [assocs (listof pair?) null]) (and/c hash? hash-eq? (not/c immutable?) hash-ephemeron?)]
+)]{
+
+Like @racket[make-hash], @racket[make-hasheq],
+@racket[make-hasheqv], and @racket[make-hashalw],
+but creates a mutable hash table that holds
+key-value combinations in the same way as an @tech{ephemeron}.
+
+Using an ephemeron hash table is like using a weak hash table and
+mapping each key to a @tech{ephemeron} that pairs the key and value.
+An advantage of an ephemeron hash table is that the value need not be
+extracted with @racket[ephemeron-value] from the result of functions
+like @racket[hash-ref]. An ephemeron hash table might also be
+represented more compactly than a weak hash table with explicit
+@tech{ephemeron} values.
+
+@history[#:added "8.0.0.10"
+         #:changed "8.5.0.3" @elem{Added @racket[make-ephemeron-hashalw].}]}
 
 @deftogether[(
 @defproc[(make-immutable-hash [assocs (listof pair?) null])
-         (and/c hash? hash-equal? immutable?)]
+         (and/c hash? hash-equal? immutable? hash-strong?)]
+@defproc[(make-immutable-hashalw [assocs (listof pair?) null])
+         (and/c hash? hash-equal-always? immutable? hash-strong?)]
 @defproc[(make-immutable-hasheqv [assocs (listof pair?) null])
-         (and/c hash? hash-eqv? immutable?)]
+         (and/c hash? hash-eqv? immutable? hash-strong?)]
 @defproc[(make-immutable-hasheq [assocs (listof pair?) null])
-         (and/c hash? hash-eq? immutable?)]
+         (and/c hash? hash-eq? immutable? hash-strong?)]
 )]{
 
-Like @racket[hash], @racket[hasheq], and @racket[hasheqv], but accepts
+Like @racket[hash], @racket[hashalw], @racket[hasheq], and
+@racket[hasheqv], but accepts
 the key--value mapping in association-list form like
-@racket[make-hash], @racket[make-hasheq], and @racket[make-hasheqv].}
+@racket[make-hash], @racket[make-hashalw], @racket[make-hasheq], and
+@racket[make-hasheqv].
+
+@history[#:changed "8.5.0.3" @elem{Added @racket[make-immutable-hashalw].}]}
 
 
 @defproc[(hash-set! [hash (and/c hash? (not/c immutable?))]
@@ -270,6 +352,15 @@ result:
 
  @item{Otherwise, @racket[failure-result] is returned as the result.}
 
+]
+
+@examples[
+#:eval the-eval
+(eval:error (hash-ref (hash) "hi"))
+(hash-ref (hash) "hi" 5)
+(hash-ref (hash) "hi" (lambda () "flab"))
+(hash-ref (hash "hi" "bye") "hi")
+(eval:error (hash-ref (hash "hi" "bye") "no"))
 ]
 
 @see-also-caveats[]}
@@ -369,33 +460,69 @@ Returns @racket[#t] if @racket[hash] contains a value for the given
                        [key any/c]
                        [updater (any/c . -> . any/c)]
                        [failure-result failure-result/c
-                                       (lambda ()
-                                         (raise (make-exn:fail:contract ....)))])
+                        (lambda ()
+                          (raise (make-exn:fail:contract ....)))])
          void?]{
 
-Composes @racket[hash-ref] and @racket[hash-set!] to update an
-existing mapping in @racket[hash], where the optional
-@racket[failure-result] argument is used as in @racket[hash-ref] when
-no mapping exists for @racket[key] already. See the caveat above about
-concurrent updates.
+ Updates the value mapped by @racket[key] in @racket[hash] by applying @racket[updater] to the value.
+ The value returned by @racket[updater] becomes the new mapping for @racket[key], overwriting the
+ original value in @racket[hash].
 
-@see-also-caveats[]}
+ @(examples
+   #:eval the-eval
+   (eval:no-prompt
+    (define h (make-hash))
+    (hash-set! h 'a 5))
+
+   (hash-update! h 'a add1)
+   h)
+
+ The optional @racket[failure-result] argument is used when no mapping exists for @racket[key]
+ already, in the same manner as in @racket[hash-ref].
+
+ @(examples
+   #:eval the-eval
+   (eval:no-prompt
+    (define h (make-hash)))
+ 
+   (eval:error (hash-update! h 'b add1))
+   (hash-update! h 'b add1 0)
+   h)
+
+ @see-also-caveats[]}
 
 
 @defproc[(hash-update [hash (and/c hash? immutable?)]
                       [key any/c]
                       [updater (any/c . -> . any/c)]
                       [failure-result failure-result/c
-                                      (lambda ()
-                                        (raise (make-exn:fail:contract ....)))])
-          (and/c hash? immutable?)]{
+                       (lambda ()
+                         (raise (make-exn:fail:contract ....)))])
+         (and/c hash? immutable?)]{
 
-Composes @racket[hash-ref] and @racket[hash-set] to functionally
-update an existing mapping in @racket[hash], where the optional
-@racket[failure-result] argument is used as in @racket[hash-ref] when
-no mapping exists for @racket[key] already.
+ Functionally updates the value mapped by @racket[key] in @racket[hash] by applying @racket[updater]
+ to the value and returning a new hash table. The value returned by @racket[updater] becomes the new
+ mapping for @racket[key] in the returned hash table.
 
-@see-also-mutable-key-caveat[]}
+ @(examples
+   #:eval the-eval
+   (eval:no-prompt
+    (define h (hash 'a 5)))
+   
+   (hash-update h 'a add1))
+
+ The optional @racket[failure-result] argument is used when no mapping exists for @racket[key]
+ already, in the same manner as in @racket[hash-ref].
+
+ @(examples
+   #:eval the-eval
+   (eval:no-prompt
+    (define h (hash)))
+   
+   (eval:error (hash-update h 'b add1))
+   (hash-update h 'b add1 0))
+
+ @see-also-mutable-key-caveat[]}
 
 
 @defproc[(hash-remove! [hash (and/c hash? (not/c immutable?))]
@@ -412,7 +539,8 @@ Removes any existing mapping for @racket[key] in @racket[hash].
          (and/c hash? immutable?)]{
 
 Functionally removes any existing mapping for @racket[key] in
-@racket[hash], returning the fresh hash table.
+@racket[hash], returning @racket[hash] (i.e., a result @racket[eq?] to
+@racket[hash]) if @racket[key] is not present in @racket[hash].
 
 @see-also-mutable-key-caveat[]}
 
@@ -440,10 +568,24 @@ performed in constant time.  If @racket[hash] is a @tech{chaperone},
 then each key is removed one-by-one using @racket[hash-remove].}
 
 
-@defproc[(hash-copy-clear [hash hash?]) hash?]{
+@defproc[(hash-copy-clear
+          [hash hash?]
+          [#:kind kind (or/c #f 'immutable 'mutable 'weak 'ephemeron) #f])
+         hash?]{
 
 Produces an empty @tech{hash table} with the same key-comparison
-procedure and mutability of @racket[hash].}
+procedure as @racket[hash], with either the given @racket[kind]
+or the same kind as the given @racket[hash].
+
+If @racket[kind] is not supplied or @racket[#f], produces a hash
+table of the same kind and mutability as the given @racket[hash].
+If @racket[kind] is @racket['immutable], @racket['mutable],
+@racket['weak], or @racket['ephemeron], produces a table that's
+immutable, mutable with strongly-held keys, mutable with
+weakly-held keys, or mutable with ephemeron-held keys
+respectively.
+
+@history[#:changed "8.5.0.2" @elem{Added the @racket[kind] argument.}]}
 
 
 
@@ -492,33 +634,81 @@ with the following order (earlier bullets before later):
 @history[#:changed "6.3" @elem{Added the @racket[try-order?] argument.}
          #:changed "7.1.0.7" @elem{Added guarantees for @racket[try-order?].}]}
 
-@defproc[(hash-keys [hash hash?])
+@defproc[(hash-map/copy
+          [hash hash?]
+          [proc (any/c any/c . -> . (values any/c any/c))]
+          [#:kind kind (or/c #f 'immutable 'mutable 'weak 'ephemeron) #f])
+         hash?]{
+
+Applies the procedure @racket[proc] to each element in
+@racket[hash] in an unspecified order, accumulating the results
+into a new hash with the same key-comparison procedure as
+@racket[hash], with either the given @racket[kind] or the same
+kind as the given @racket[hash].
+
+If @racket[kind] is not supplied or @racket[#f], produces a hash
+table of the same kind and mutability as the given @racket[hash].
+If @racket[kind] is @racket['immutable], @racket['mutable],
+@racket['weak], or @racket['ephemeron], produces a table that's
+immutable, mutable with strongly-held keys, mutable with
+weakly-held keys, or mutable with ephemeron-held keys
+respectively.
+
+@examples[
+#:eval the-eval
+(hash-map/copy #hash((a . "apple") (b . "banana"))
+               (lambda (k v) (values k (string-upcase v))))
+(define frozen-capital
+  (hash-map/copy (make-hash '((a . "apple") (b . "banana")))
+                 (lambda (k v) (values k (string-upcase v)))
+                 #:kind 'immutable))
+frozen-capital
+(immutable? frozen-capital)
+]
+
+@history[#:added "8.5.0.2"]}
+
+@defproc[(hash-keys [hash hash?] [try-order? any/c #f])
          (listof any/c)]{
 Returns a list of the keys of @racket[hash] in an unspecified order.
 
-See @racket[hash-map] for information about modifying @racket[hash]
-during @racket[hash-keys]. @see-also-concurrency-caveat[]}
+If @racket[try-order?] is true, then the order of keys is normalized under
+certain circumstances.  See @racket[hash-map] for further explanations on
+@racket[try-order?] and on information about modifying @racket[hash] during
+@racket[hash-keys]. @see-also-concurrency-caveat[]
 
-@defproc[(hash-values [hash hash?])
+@history[#:changed "8.3.0.11" @elem{Added the @racket[_try-order?] argument.}]}
+
+@defproc[(hash-values [hash hash?] [try-order? any/c #f])
          (listof any/c)]{
 Returns a list of the values of @racket[hash] in an unspecified order.
 
-See @racket[hash-map] for information about modifying @racket[hash]
-during @racket[hash-values]. @see-also-concurrency-caveat[]}
+If @racket[try-order?] is true, then the order of values is normalized under
+certain circumstances, based on the ordering of the associated keys.
+See @racket[hash-map] for further explanations on @racket[try-order?] and on
+information about modifying @racket[hash] during
+@racket[hash-values]. @see-also-concurrency-caveat[]
 
-@defproc[(hash->list [hash hash?])
+@history[#:changed "8.3.0.11" @elem{Added the @racket[_try-order?] argument.}]}
+
+@defproc[(hash->list [hash hash?] [try-order? any/c #f])
          (listof (cons/c any/c any/c))]{
 Returns a list of the key--value pairs of @racket[hash] in an unspecified order.
 
-See @racket[hash-map] for information about modifying @racket[hash]
-during @racket[hash->list]. @see-also-concurrency-caveat[]}
+If @racket[try-order?] is true, then the order of keys and values is normalized
+under certain circumstances. See @racket[hash-map] for further explanations on
+@racket[try-order?] and on information about modifying @racket[hash] during
+@racket[hash->list]. @see-also-concurrency-caveat[]
+
+@history[#:changed "8.3.0.11" @elem{Added the @racket[_try-order?] argument.}]}
 
 @defproc[(hash-keys-subset? [hash1 hash?] [hash2 hash?])
          boolean?]{
 Returns @racket[#t] if the keys of @racket[hash1] are a subset of or
 the same as the keys of @racket[hash2]. The hash tables must both use
-the same key-comparison function (@racket[equal?], @racket[eqv?], or
-@racket[eq?]), otherwise the @exnraise[exn:fail:contract].
+the same key-comparison function (@racket[equal?],
+@racket[equal-always?], @racket[eqv?], or @racket[eq?]), otherwise the
+@exnraise[exn:fail:contract].
 
 Using @racket[hash-keys-subset?] on immutable hash tables can be much
 faster than iterating through the keys of @racket[hash1] to make sure
@@ -546,10 +736,13 @@ about modifying @racket[hash] within @racket[proc].
 @defproc[(hash-count [hash hash?])
          exact-nonnegative-integer?]{
 
-Returns the number of keys mapped by @racket[hash]. Unless @racket[hash]
-retains keys weakly, the result is computed in
-constant time and atomically. If @racket[hash] retains it keys weakly, a
-traversal is required to count the keys.}
+Returns the number of keys mapped by @racket[hash].
+
+For the @tech{CS} implementation of Racket, the result is always
+computed in constant time and atomically. For the @tech{BC} implementation
+of Racket, the result is computed in constant time and atomically only if
+@racket[hash] does not retain keys weakly or like an @tech{ephemeron},
+otherwise, a traversal is required to count the keys.}
 
 
 @defproc[(hash-empty? [hash hash?]) boolean?]{
@@ -569,12 +762,13 @@ integers.
 For a mutable @racket[hash], this index is guaranteed to refer to the
 first item only as long as no items are added to or removed from
 @racket[hash]. More generally, an index is guaranteed to be a
-@deftech{valid hash index} for a given hash table only as long it comes
-from @racket[hash-iterate-first] or @racket[hash-iterate-next], and
-only as long as the hash table is not modified. In the case of a hash
-table with weakly held keys, the hash table can be implicitly modified
-by the garbage collector (see @secref["gc-model"]) when it discovers
-that the key is not reachable.}
+@deftech{valid hash index} for a given hash table only as long it
+comes from @racket[hash-iterate-first] or @racket[hash-iterate-next],
+and only as long as the hash table is not modified. In the case of a
+hash table with weakly held keys or keys held like @tech{ephemerons},
+the hash table can be implicitly modified by the garbage collector
+(see @secref["gc-model"]) when it discovers that the key is not
+reachable.}
 
 
 @defproc[(hash-iterate-next [hash hash?]
@@ -778,7 +972,8 @@ the hash tables by applying @racket[(combine/key k v vi)] or
 @racket[k] is mapped in the i-th hash table @racket[h], and
 @racket[v] is the accumulation of the values from the previous steps.
 The comparison predicate of the first argument (@racket[eq?],
-@racket[eqv?], @racket[equal?]) determines the one for the result.
+@racket[eqv?], @racket[equal-always?], @racket[equal?]) determines the
+one for the result.
 
 @examples[
 #:eval the-eval

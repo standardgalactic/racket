@@ -4,13 +4,9 @@
          racket/unsafe/ops
          "for-util.rkt")
 
-(define 64-bit? (= (system-type 'word) 64))
-
-(define (fixnum-width) (if (eq? 'racket (system-type 'vm))
-                           (if 64-bit? 63 31)
-                           (if 64-bit? 61 30)))
-(define (least-fixnum) (- (expt 2 (sub1 (fixnum-width)))))
-(define (greatest-fixnum) (sub1 (expt 2 (sub1 (fixnum-width)))))
+(define (least-fixnum) (most-negative-fixnum))
+(define (greatest-fixnum) (most-positive-fixnum))
+(define (fixnum-width) (add1 (integer-length (most-positive-fixnum))))
 
 (test #t fixnum? (least-fixnum))
 (test #t fixnum? (greatest-fixnum))
@@ -27,14 +23,90 @@
 (test #f fixnum-for-every-system? (sub1 (- (expt 2 29))))
 (test #f fixnum-for-every-system? (expt 2 29))
 
+(test 3 fxpopcount 7)
+(test 4 fxpopcount 29)
+(test 2 fxpopcount (fxlshift #b101 20))
+
+(when (<= #xFFFFFFFF (most-positive-fixnum))
+  (test 32 fxpopcount #xFFFFFFFF)
+  (test 31 fxpopcount #xFFFFFFFE)
+  (test 31 fxpopcount #x7FFFFFFF))
+
+(test 16 fxpopcount16 #xFFFF)
+(test 15 fxpopcount16 #x7FFF)
+
+(err/rt-test (fxpopcount -1))
+(err/rt-test (fxpopcount (most-negative-fixnum)))
+(err/rt-test (fxpopcount32 -1))
+(err/rt-test (fxpopcount32 #x100000000))
+(err/rt-test (fxpopcount32 #x1FFFFFFFF))
+(err/rt-test (fxpopcount16 -1))
+(err/rt-test (fxpopcount16 #x10000))
+(err/rt-test (fxpopcount16 #x1FFFF))
+
+(err/rt-test (fxpopcount (add1 (most-negative-fixnum))))
+(err/rt-test (fxpopcount32 (add1 (most-negative-fixnum))))
+(err/rt-test (fxpopcount16 (add1 (most-negative-fixnum))))
+
+(test 2 fxlshift 1 1)
+(test 2 fxlshift/wraparound 1 1)
+(test 6 fxlshift 3 1)
+(test 6 fxlshift/wraparound 3 1)
+(test 96 fxlshift 6 4)
+(test 96 fxlshift/wraparound 6 4)
+(test 144 fxlshift 9 4)
+(test 144 fxlshift/wraparound 9 4)
+(test 26880 fxlshift 105 8)
+(test 26880 fxlshift/wraparound 105 8)
+(test 38400 fxlshift 150 8)
+(test 38400 fxlshift/wraparound 150 8)
+(test -2 fxlshift/wraparound (most-positive-fixnum) 1)
+(test -4 fxlshift/wraparound (most-positive-fixnum) 2)
+(test -8 fxlshift/wraparound (most-positive-fixnum) 3)
+
+(test 0 fxrshift 1 1)
+(test 0 fxrshift/logical 1 1)
+(test 1 fxrshift 2 1)
+(test 1 fxrshift/logical 2 1)
+(test 1 fxrshift 6 2)
+(test 1 fxrshift/logical 6 2)
+(test 2 fxrshift 9 2)
+(test 2 fxrshift/logical 9 2)
+(test 6 fxrshift 105 4)
+(test 6 fxrshift/logical 105 4)
+(test 9 fxrshift 150 4)
+(test 9 fxrshift/logical 150 4)
+(test 105 fxrshift 27030 8)
+(test 105 fxrshift/logical 27030 8)
+(test 150 fxrshift 38505 8)
+(test 150 fxrshift/logical 38505 8)
+(test (most-positive-fixnum) fxrshift/logical -1 1)
+(test (most-positive-fixnum) fxrshift/logical -2 1)
+(test (fxrshift (most-positive-fixnum) 1) fxrshift/logical -4 2)
+(test (fxrshift (most-positive-fixnum) 2) fxrshift/logical -8 3)
+(test (fxrshift (most-positive-fixnum) 9) fxrshift/logical -1 10)
+
 (define (wraparound op)
   (lambda (x y)
     (unless (fixnum? x) (raise-argument-error 'wraparound "fixnum?" x))
     (unless (fixnum? y) (raise-argument-error 'wraparound "fixnum?" y))
     (define v (op x y))
-    (if (zero? (bitwise-and v (add1 (greatext-fixnum))))
-        (bitwise-ior v (- -1 (greatest-fixnum)))
-        (bitwise-and v (greatest-fixnum)))))
+    (if (zero? (bitwise-and v (add1 (greatest-fixnum))))
+        (bitwise-and v (greatest-fixnum))
+        (bitwise-ior v (least-fixnum)))))
+
+; Check some special cases of the wraparound versions
+(let ()
+  (define fxw+ (wraparound +))
+  (define fxw- (wraparound -))
+  (define fxw* (wraparound *))
+  (test 0 fxw+ (least-fixnum) (least-fixnum))
+  (test -2 fxw+ (greatest-fixnum) (greatest-fixnum))
+  (test 1 fxw- (least-fixnum) (greatest-fixnum))
+  (test -1 fxw- (greatest-fixnum) (least-fixnum))
+  (test 0 fxw* (least-fixnum) (least-fixnum))
+  (test (least-fixnum) fxw* (least-fixnum) (greatest-fixnum))
+  (test 1 fxw* (greatest-fixnum) (greatest-fixnum)))
 
 (define (lshift x y)
   (unless (<= 0 y (integer-length (greatest-fixnum)))
@@ -43,6 +115,9 @@
 
 (define unary-table 
   (list (list fxnot unsafe-fxnot)
+        (list fxpopcount unsafe-fxpopcount)
+        (list fxpopcount32 unsafe-fxpopcount32)
+        (list fxpopcount16 unsafe-fxpopcount16)
         (list fxabs unsafe-fxabs)
         (list fx->fl unsafe-fx->fl)
         (list (lambda (v) (fl->fx (exact->inexact x)))
@@ -82,7 +157,8 @@
 
 (define binary/small-second-arg-table
   (list (list fxlshift unsafe-fxlshift)
-        (list fxrshift unsafe-fxrshift)))
+        (list fxrshift unsafe-fxrshift)
+        (list fxrshift/logical unsafe-fxrshift/logical)))
 
 (define table (append binary/small-second-arg-table binary-table unary-table 1nary-table 0nary-table))
   
@@ -375,6 +451,29 @@
 ;; Too big for all current fixnum ranges:
 (err/rt-test (fl->fx 4.611686018427388e+18))
 (err/rt-test (fl->fx -4.611686018427389e+18))
+
+;; ----------------------------------------
+;; Regression tests related to `bitwise-and` and `bitwise-ior` return-type
+;; optimization for `fixnum?`
+
+(test #t
+      (lambda (a) (fixnum? (bitwise-and a 7)))
+      (- (random 1) 1))
+(test #t
+      (lambda (a) (fixnum? (bitwise-and a (most-positive-fixnum))))
+      (- (random 1) 1))
+(test #f
+      (lambda (a) (fixnum? (bitwise-and a (add1 (most-positive-fixnum)))))
+      (- (random 1) 1))
+(test #t
+      (lambda (a) (fixnum? (bitwise-ior -7 a)))
+      (random 1))
+(test #t
+      (lambda (a) (fixnum? (bitwise-ior (most-negative-fixnum) a)))
+      (random 1))
+(test #f
+      (lambda (a) (fixnum? (bitwise-ior (sub1 (most-negative-fixnum)) a)))
+      (random 1))
 
 ;; ----------------------------------------
 

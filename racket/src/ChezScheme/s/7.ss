@@ -114,13 +114,7 @@
                 (let ([path (let ([dir (car ls)])
                               (if (or (string=? dir "") (string=? dir "."))
                                   fn
-                                  (format
-                                    (if (directory-separator?
-                                          (string-ref dir
-                                            (fx- (string-length dir) 1)))
-                                        "~a~a"
-                                        "~a/~a")
-                                    dir fn)))])
+                                  (path-build dir fn)))])
                   (if (guard (c [#t #f]) (close-input-port (open-input-file path)) #t)
                       (p path)
                       (loop (cdr ls))))))))))
@@ -699,24 +693,22 @@
       [() ((abort-handler)) (unexpected-return who)]
       [(x) ((abort-handler) x) (unexpected-return who)])))
 
+(define-who assert-unreachable
+  (lambda ()
+    ($oops who "unreachable code reached")))
+
 (define $interrupt ($make-thread-parameter void))
 
 (define $format-scheme-version
   (lambda (n)
-    (if (= (logand n 255) 0)
-        (if (= (logand n 255) 0)
-            (format "~d.~d"
-              (ash n -24)
-              (logand (ash n -16) 255))
-            (format "~d.~d.~d"
-              (ash n -24)
-              (logand (ash n -16) 255)
-              (logand (ash n -8) 255)))
-        (format "~d.~d.~d.~d"
+    (if (= (logand (ash n -8) 255) 0)
+        (format "~d.~d"
+          (ash n -24)
+          (logand (ash n -16) 255))
+        (format "~d.~d.~d"
           (ash n -24)
           (logand (ash n -16) 255)
-          (logand (ash n -8) 255)
-          (logand n 255)))))
+          (logand (ash n -8) 255)))))
 
 ; set in back.ss
 (define $scheme-version)
@@ -729,24 +721,36 @@
         (logand (ash n -16) 255)
         (logand (ash n -8) 255)))))
 
-(define scheme-fork-version-number
+(define scheme-pre-release
   (lambda ()
-    (let ([n (constant scheme-version)])
-      (values
-        (ash n -24)
-        (logand (ash n -16) 255)
-        (logand (ash n -8) 255)
-        (logand n 255)))))
+    (let ([n (logand (constant scheme-version) 255)])
+      (and (fx> n 0)
+           n))))
 
 (define scheme-version
-  (let ([s #f])
-    (lambda ()
-      (unless s
-        (set! s
-          (format "~:[Petite ~;~]Chez Scheme Version ~a"
-            $compiler-is-loaded?
-            $scheme-version)))
-      s)))
+  (let ([s #f]
+        [s+pre #f])
+    (rec scheme-version
+      (case-lambda
+       [() (scheme-version #f)]
+       [(show-pre-release?)
+        (or (if show-pre-release? s+pre s)
+            (let* ([pre-n (scheme-pre-release)]
+                   [str (format "~:[Petite ~;~]Chez Scheme Version ~a~a"
+                                $compiler-is-loaded?
+                                $scheme-version
+                                (if show-pre-release?
+                                    (if pre-n (format "-pre-release.~a" pre-n) "")
+                                    ""))])
+              (cond
+                [(not pre-n)
+                 (set! s str)
+                 (set! s+pre str)]
+                [show-pre-release?
+                 (set! s+pre str)]
+                [else
+                 (set! s str)])
+              str))]))))
 
 (define petite?
   (lambda ()
@@ -767,12 +771,14 @@
     (lambda (t)
       (unless (and (time? t) (eq? (time-type t) 'time-duration))
         ($oops who "~s is not a time record of type time-duration" t))
-      (fp (time-second t) (time-nanosecond t)))))
+      (let ([s (time-second t)])
+        (when (>= s 0)
+          (fp s (time-nanosecond t)))))))
 
 (define $scheme-greeting
   (lambda ()
-    (format "~a\nCopyright 1984-2020 Cisco Systems, Inc.\n"
-      (scheme-version))))
+    (format "~a\nCopyright 1984-2022 Cisco Systems, Inc.\n"
+      (scheme-version #t))))
 
 (define $session-key #f)
 (define $scheme-init)
@@ -1204,7 +1210,7 @@
                       (waiter))]
                    [(and (integer? x) (nonnegative? x))
                     (fprintf (console-output-port)
-                       "No saved error continution for thread ~s.~%"
+                       "No saved error continuation for thread ~s.~%"
                        x)
                     (flush-output-port (console-output-port))
                     (waiter)]

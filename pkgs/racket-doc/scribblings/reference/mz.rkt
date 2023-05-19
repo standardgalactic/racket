@@ -6,17 +6,18 @@
          scribble/decode
          racket/contract
          racket/contract/collapsible
-         "../icons.rkt")
+         "../icons.rkt"
+         (for-label racket
+                    racket/contract/collapsible
+                    racket/mutability))
 
 (provide (all-from-out scribble/manual)
          (all-from-out scribble/examples)
          (all-from-out racket/contract)
-         (all-from-out racket/contract/collapsible))
-
-(require (for-label racket))
-(provide (for-label (all-from-out racket)))
-(require (for-label racket/contract/collapsible))
-(provide (for-label (all-from-out racket/contract/collapsible)))
+         (all-from-out racket/contract/collapsible)
+         (for-label (all-from-out racket
+                                  racket/contract/collapsible
+                                  racket/mutability)))
 
 (provide mz-examples)
 (define mz-eval (make-base-eval))
@@ -175,3 +176,10 @@
 (provide envvar-indexed)
 (define (envvar-indexed s)
   (as-index (envvar s)))
+
+(provide concurrency-caveat
+         mutable-key-caveat)
+@(define (concurrency-caveat)
+  @elemref['(caveat "concurrency")]{caveats concerning concurrent modification})
+@(define (mutable-key-caveat)
+  @elemref['(caveat "mutable-keys")]{caveat concerning mutable keys})

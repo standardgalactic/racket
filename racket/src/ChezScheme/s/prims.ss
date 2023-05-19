@@ -76,6 +76,57 @@
     [else
      (lambda (p) (ephemeron-pair? p))]))
 
+(define reference-bytevector?
+  (constant-case architecture
+    [(pb)
+     (foreign-procedure "(cs)s_reference_bytevectorp" (scheme-object) scheme-object)]
+    [else
+     (lambda (p) (reference-bytevector? p))]))
+
+(define-who bytevector-reference-ref
+  (lambda (bv i)
+    (unless (reference-bytevector? bv) ($oops who "~s is not a reference bytevector" bv))
+    (unless (and (fixnum? i)
+                 (not ($fxu< (fx- (bytevector-length bv) (fx- (constant ptr-bytes) 1)) i)))
+      ($oops who "invalid index ~s for ~s" i bv))
+    (bytevector-reference-ref bv i)))
+
+(define-who bytevector-reference*-ref
+  (let ([ref (foreign-procedure "(cs)s_bytevector_reference_star_ref" (ptr uptr) ptr)])
+    (lambda (bv i)
+      (unless (reference-bytevector? bv) ($oops who "~s is not a reference bytevector" bv))
+      (unless (and (fixnum? i)
+                   (not ($fxu< (fx- (bytevector-length bv) (fx- (constant ptr-bytes) 1)) i)))
+        ($oops who "invalid index ~s for ~s" i bv))
+      (ref bv i))))
+
+(define-who bytevector-reference-set!
+  (lambda (bv i val)
+    (unless (reference-bytevector? bv) ($oops who "~s is not a reference bytevector" bv))
+    (unless (and (fixnum? i)
+                 (not ($fxu< (fx- (bytevector-length bv) (fx- (constant ptr-bytes) 1)) i)))
+      ($oops who "invalid index ~s for ~s" i bv))
+    (bytevector-reference-set! bv i val)))
+
+(define-who object->reference-address
+  (lambda (v)
+    (object->reference-address v)))
+
+(define-who reference-address->object
+  (lambda (a)
+    (unless (and (or (fixnum? a) (bignum? a))
+                 (< -1 a (bitwise-arithmetic-shift 1 (constant ptr-bits))))
+      ($oops who "invalid address ~s" a))
+    (reference-address->object a)))
+
+(define-who reference*-address->object
+  (let ([ref->obj (foreign-procedure "(cs)s_reference_star_address_object" (uptr) ptr)])
+    (lambda (a)
+      (unless (and (or (fixnum? a) (bignum? a))
+                   (< -1 a (bitwise-arithmetic-shift 1 (constant ptr-bits))))
+        ($oops who "invalid address ~s" a))
+      (ref->obj a))))
+
 (define $split-continuation
   (foreign-procedure "(cs)single_continuation"
     (scheme-object iptr)
@@ -175,7 +226,7 @@
 
 (define $intern-gensym
   (foreign-procedure "(cs)s_intern_gensym"
-    (scheme-object)
+    (scheme-object scheme-object)
     void))
 
 (define cpu-time
@@ -219,15 +270,28 @@
   (foreign-procedure "(cs)fxdiv" (fixnum fixnum)
     fixnum))
 
-(define $procedure-name
+(define-who $procedure-name
   (lambda (x)
     (unless (procedure? x)
-      ($oops '$procedure-name "~s is not a procedure" x))
+      ($oops who "~s is not a procedure" x))
     (let name ([x x])
       (let ([code ($closure-code x)])
         (if ($code-arity-in-closure? code)
             (name ($closure-ref x 0))
             ($code-name code))))))
+
+(define-who $procedure-realm
+  (lambda (x)
+    (unless (procedure? x)
+      ($oops who "~s is not a procedure" x))
+    (let realm ([x x])
+      (let ([code ($closure-code x)])
+        (if ($code-arity-in-closure? code)
+            (realm ($closure-ref x 0))
+            (let ([info ($code-info code)])
+              (include "types.ss")
+              (and (code-info? info)
+                   (code-info-realm info))))))))
 
 (define-who procedure-arity-mask
   (lambda (x)
@@ -306,6 +370,12 @@
     ($oops who "invalid new length ~s for ~s" n st))
   (string-truncate! st n))
 
+(define-who $make-uninitialized-string
+  (lambda (n)
+    (unless (and (fixnum? n) (not ($fxu< (constant maximum-string-length) n)))
+      ($oops who "~s is not a valid string length" n))
+    ($make-uninitialized-string n)))
+
 (define-who make-string
   (case-lambda
     [(n c)
@@ -341,6 +411,20 @@
        (unless (and (fixnum? n) (not ($fxu< (constant maximum-vector-length) n)))
          ($oops who "~s is not a valid vector length" n))
        ($make-immobile-vector n 0)])))
+
+(define-who make-reference-bytevector
+  (let ([$make-reference-bytevector (foreign-procedure "(cs)s_make_reference_bytevector" (uptr) ptr)])
+    (lambda (n)
+      (unless (and (fixnum? n) (not ($fxu< (constant maximum-bytevector-length) n)))
+        ($oops who "~s is not a valid bytevector length" n))
+      ($make-reference-bytevector n))))
+
+(define-who make-immobile-reference-bytevector
+  (let ([$make-immobile-reference-bytevector (foreign-procedure "(cs)s_make_immobile_reference_bytevector" (uptr) ptr)])
+    (lambda (n)
+      (unless (and (fixnum? n) (not ($fxu< (constant maximum-bytevector-length) n)))
+        ($oops who "~s is not a valid bytevector length" n))
+      ($make-immobile-reference-bytevector n))))
 
 (define $make-eqhash-vector
   (case-lambda
@@ -434,12 +518,16 @@
     (#2%apply f args)))
 
 ;; Implies no-inline, and in unsafe mode, asserts that the
-;; application will not return
+;; application will not return and that it does not inspect/change
+;; the immediate continuation attachment (so it can be moved to a
+;; more-tail position)
 (define $app/no-return
   (lambda (f . args)
     (#2%apply f args)))
 
 ;; In unsafe mode, asserts that the applicaiton returns a single value
+;; and that it does not inspect/change the immediate continuation
+;; attachment (so it can be moved to a more-tail position)
 (define $app/value
   (lambda (f . args)
     (#2%apply f args)))
@@ -474,16 +562,16 @@
 ;; attachments or the given attachments `as` that must be either
 ;; the same as the attachments saved by `c` or one immediate
 ;; attachment extending those attachments
-(define-who call-in-continuation
+(define-who $call-in-continuation
   (case-lambda
    [(c p)
     (unless (procedure? p)
       ($oops who "~s is not a procedure" p))
-    (#2%call-in-continuation c (lambda () (p)))]
+    (#2%$call-in-continuation c (lambda () (p)))]
    [(c as p)
     (unless (procedure? p)
       ($oops who "~s is not a procedure" p))
-    (#2%call-in-continuation c as (lambda () (p)))]))
+    (#2%$call-in-continuation c as (lambda () (p)))]))
 
 ;; checks `c` and consistency of `as` with `c`, and also runs any needed winders
 (define $assert-continuation
@@ -491,23 +579,23 @@
    [(c) (#2%$assert-continuation c)]
    [(c as) (#2%$assert-continuation c as)]))
 
-(define-who call-setting-continuation-attachment
+(define-who $call-setting-continuation-attachment
   (lambda (v p)
     (unless (procedure? p)
       ($oops who "~s is not a procedure" p))
-    (#3%call-setting-continuation-attachment v (lambda () (p)))))
+    (#3%$call-setting-continuation-attachment v (lambda () (p)))))
 
-(define-who call-getting-continuation-attachment
+(define-who $call-getting-continuation-attachment
   (lambda (default-val p)
     (unless (procedure? p)
       ($oops who "~s is not a procedure" p))
-    (#3%call-getting-continuation-attachment default-val (lambda (x) (p x)))))
+    (#3%$call-getting-continuation-attachment default-val (lambda (x) (p x)))))
 
-(define-who call-consuming-continuation-attachment
+(define-who $call-consuming-continuation-attachment
   (lambda (default-val p)
     (unless (procedure? p)
       ($oops who "~s is not a procedure" p))
-    (#3%call-consuming-continuation-attachment default-val (lambda (x) (p x)))))
+    (#3%$call-consuming-continuation-attachment default-val (lambda (x) (p x)))))
 
 (define $code? (lambda (x) ($code? x)))
 
@@ -573,15 +661,29 @@
 
 (define foreign-callable-entry-point
   (lambda (x)
-    (unless ($code? x)
-      ($oops 'foreign-callable-entry-point "~s is not a code object" x))
-    ($object-address x (constant code-data-disp))))
+    (constant-case architecture
+      [(pb)
+       (unless (vector? x)
+         ($oops 'foreign-callable-entry-point "~s is not a vector" x))
+       (bitwise-arithmetic-shift-left (vector-ref x 2) (constant fixnum-offset))]
+      [else
+       (unless ($code? x)
+         ($oops 'foreign-callable-entry-point "~s is not a code object" x))
+       ($object-address x (constant code-data-disp))])))
 
 (define-who foreign-callable-code-object
-  (lambda (x)
-    (unless (and (integer? x) (exact? x) ($address-in-heap? x))
-      ($oops who "~s is not an entry point" x))
-    ($address->object x (constant code-data-disp))))
+  (constant-case architecture
+    [(pb)
+     (let ([find-callable-code-object (foreign-procedure "(cs)find_callable_code_object" (uptr) ptr)])
+       (lambda (x)
+         (unless (and (integer? x) (exact? x))
+           ($oops who "~s is not an entry point" x))
+         (find-callable-code-object x)))]
+    [else
+     (lambda (x)
+       (unless (and (integer? x) (exact? x) ($address-in-heap? x))
+         ($oops who "~s is not an entry point" x))
+       ($address->object x (constant code-data-disp)))]))
 
 (define $closure-code
    (lambda (x)
@@ -1338,12 +1440,20 @@
    (lambda (v)
       (#2%stencil-vector-mask v)))
 
+(define $stencil-vector-mask
+   (lambda (v)
+      (#2%$stencil-vector-mask v)))
+
 (define-who $make-stencil-vector
   (lambda (len mask)
     ($oops who "should only be used as inlined with GC disabled")))
 
+(define-who $make-system-stencil-vector
+  (lambda (len mask)
+    ($oops who "should only be used as inlined with GC disabled")))
+
 ; not safe; assumes `val` is older than `v`
-(define $stencil-vector-set!
+(define $stencil-vector-fill-set!
   (lambda (v i val)
     ($stencil-vector-set! v i val)))
 
@@ -1437,6 +1547,10 @@
 (define flvector? (lambda (x) (flvector? x)))
 
 (define stencil-vector? (lambda (x) (stencil-vector? x)))
+
+(define $stencil-vector? (lambda (x) ($stencil-vector? x)))
+
+(define $system-stencil-vector? (lambda (x) ($system-stencil-vector? x)))
 
 (define procedure? (lambda (x) (procedure? x)))
 
@@ -1587,6 +1701,14 @@
      (display-string s)]))
 
 (define $immediate? (lambda (x) ($immediate? x)))
+
+;; Used to communicate fixmediateness from cptypes to cpnanopass:
+(define-who $fixmediate
+  (lambda (x)
+    (if (fixmediate? x)
+        x
+        ($oops who "~s is not a fixnum or immediate value" x))))
+
 (define $inexactnum? (lambda (x) ($inexactnum? x)))
 
 (define $inexactnum-real-part
@@ -1650,6 +1772,8 @@
     (case-lambda
       [() ($current-winders)]
       [(w)
+       ;; this check could be helpful, but it's not constant-time:
+       #;
        (unless (and (list? w) (andmap winder? w))
          ($oops who "malformed winders ~s" w))
        ($current-winders w)])))
@@ -1658,6 +1782,8 @@
   (case-lambda
     [() ($current-attachments)]
     [(w)
+     ;; this check could be helpful, but it's not constant-time:
+     #;
      (unless (list? w)
        ($oops '$current-attachments "malformed attachments ~s" w))
      ($current-attachments w)]))
@@ -1875,8 +2001,8 @@
       (condition-guardian c)
       c)))
 
-(define mutex-guardian (make-guardian))
-(define condition-guardian (make-guardian))
+(define mutex-guardian (make-guardian #t))
+(define condition-guardian (make-guardian #t))
 
 (set! fork-thread
   (lambda (t)
@@ -1897,11 +2023,14 @@
   (lambda (t)
     (unless (thread? t)
       ($oops who "~a is not a thread" t))
-    (with-tc-mutex
-     (let f ()
-       (unless (eq? ($thread-tc t) 0)
-         (condition-wait $terminated-cond $tc-mutex)
-         (f))))))
+    ;; not using `with-tc-mutex` because we don't want to
+    ;; disable interrupts
+    (mutex-acquire $tc-mutex)
+    (let f ()
+      (unless (eq? ($thread-tc t) 0)
+        (condition-wait $terminated-cond $tc-mutex)
+        (f)))
+    (mutex-release $tc-mutex)))
 
 (set-who! thread-preserve-ownership!
   (let ([preserve! (foreign-procedure "(cs)thread_preserve_ownership" (ptr) void)])
@@ -2313,7 +2442,21 @@
     ($oops who "~s is not a record type descriptor" rtd))
   (#3%$sealed-record? x rtd))
 
+(define-who ($sealed-record-instance? x rtd)
+  (unless (record? x)
+    ($oops who "~s is not a record" x))
+  (unless (record-type-descriptor? rtd)
+    ($oops who "~s is not a record type descriptor" rtd))
+  (#3%$sealed-record-instance? x rtd))
+
 (define ($record? x) (#3%$record? x))
+
+(define-who (record-instance? x rtd)
+  (unless (record? x)
+    ($oops who "~s is not a record" x))
+  (unless (record-type-descriptor? rtd)
+    ($oops who "~s is not a record type descriptor" rtd))
+  (#3%record-instance? x rtd))
 
 (define-who ($record-type-descriptor r)
   (unless ($record? r) ($oops who "~s is not a record" r))
@@ -2776,7 +2919,7 @@
     (unless (wrapper-procedure? x) ($oops who "~s is not a wrapper procedure" x))
     ($closure-ref x 0)))
 
-(define-who set-wrapper-procedure!
+(define-who set-wrapper-procedure-procedure!
   (lambda (x proc)
     (unless (wrapper-procedure? x) ($oops who "~s is not a wrapper procedure" x))
     (unless (procedure? proc)  ($oops who "~s is not a procedure" proc))

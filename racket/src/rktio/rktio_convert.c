@@ -157,10 +157,15 @@ static void init_iconv()
     else
       iconv_errno = (errno_proc_t)GetProcAddress(m, "_errno");
     if (!iconv_errno) {
-      /* The iconv.dll distributed with Racket links to msvcrt.dll.
-	 It's a slightly dangerous assumption that whatever iconv we
-	 found also uses msvcrt.dll. */
+      /* The iconv.dll distributed with Racket links to "msvcrt.dll"
+	 on x86 and x86_64, and to "API-MS-WIN-CRT-RUNTIME-L1-1-1.0.DLL"
+	 for Arm64. It's a slightly dangerous assumption that whatever
+	 iconv we found also uses that DLL. */
+# if defined(_M_ARM64)
+      m = LoadLibraryW(L"API-MS-WIN-CRT-RUNTIME-L1-1-1.0.DLL");
+# else
       m = LoadLibraryW(L"msvcrt.dll");
+# endif
       if (m) {
 	iconv_errno = (errno_proc_t)GetProcAddress(m, "_errno");
 	if (!iconv_errno) {
@@ -307,7 +312,7 @@ static char *nl_langinfo_dup(rktio_t *rktio)
   int i;
   char *current_locale_name;
 
-  current_locale_name = setlocale(LC_NUMERIC, NULL);
+  current_locale_name = setlocale(LC_CTYPE, NULL);
   if (!current_locale_name)
     current_locale_name = "";
 

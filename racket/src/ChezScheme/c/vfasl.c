@@ -135,9 +135,9 @@ ptr S_vfasl(ptr bv, void *stream, iptr offset, iptr input_len)
     uptr sz = vspace_offsets[s+1] - vspace_offsets[s];
     if (sz > 0) {
       if ((s == vspace_reloc) && to_static && !S_G.retain_static_relocation) {
-        newspace_find_room(tc, typemod, sz, vspaces[s]);
+        newspace_find_room(tc, type_untyped, sz, vspaces[s]);
       } else {
-        find_room(tc, vspace_spaces[s], (to_static ? static_generation : 0), typemod, sz, vspaces[s]);
+        find_room(tc, vspace_spaces[s], (to_static ? static_generation : 0), type_untyped, sz, vspaces[s]);
       }
       if (bv) {
         memcpy(TO_VOIDP(vspaces[s]), bv_addr, sz);
@@ -146,7 +146,7 @@ ptr S_vfasl(ptr bv, void *stream, iptr offset, iptr input_len)
 	ptr dest;
 #ifdef CANNOT_READ_DIRECTLY_INTO_CODE
 	if (s == vspace_code)
-	  newspace_find_room(tc, typemod, sz, dest);
+	  newspace_find_room(tc, type_untyped, sz, dest);
 	else
 	  dest = vspaces[s];
 #else
@@ -170,7 +170,7 @@ ptr S_vfasl(ptr bv, void *stream, iptr offset, iptr input_len)
   if (bv)
     table = TO_PTR(bv_addr);
   else {
-    newspace_find_room(tc, typemod, ptr_align(VFASLHEADER_TABLE_SIZE(header)), table);
+    newspace_find_room(tc, type_untyped, ptr_align(VFASLHEADER_TABLE_SIZE(header)), table);
     if (S_fasl_stream_read(stream, TO_VOIDP(table), VFASLHEADER_TABLE_SIZE(header)) < 0)
       S_error("fasl-read", "input truncated");
   }
@@ -285,6 +285,7 @@ ptr S_vfasl(ptr bv, void *stream, iptr offset, iptr input_len)
 
       while (sym < end_syms) {
         ptr isym;
+        IBOOL uninterned;
 
         /* Make sure we don't try to claim a symbol that crosses
            a segment boundary */
@@ -299,23 +300,27 @@ ptr S_vfasl(ptr bv, void *stream, iptr offset, iptr input_len)
           }
         }
 
+        uninterned = (SYMPVAL(sym) == Sfalse);
+
         INITSYMVAL(sym) = sunbound;
-        INITSYMCODE(sym,S_G.nonprocedure_code);
+        INITSYMCODE(sym, S_G.nonprocedure_code);
 
 #if 0
         S_prin1(sym); printf("\n");
 #endif
 
-        isym = S_intern4(sym);
-        if (isym != sym) {
-          /* The symbol was already interned, so point to the existing one */
-          INITSYMVAL(sym) = isym;
-          if (S_vfasl_boot_mode > 0) {
-            IGEN gen = SegInfo(ptr_get_segment(isym))->generation;
-            if (gen < static_generation) {
-              printf("WARNING: vfasl symbol already interned, but at generation %d: %p ", gen, TO_VOIDP(isym));
-              S_prin1(isym);
-              printf("\n");
+        if (!uninterned) {
+          isym = S_intern4(sym);
+          if (isym != sym) {
+            /* The symbol was already interned, so point to the existing one */
+            INITSYMVAL(sym) = isym;
+            if (S_vfasl_boot_mode > 0) {
+              IGEN gen = SegInfo(ptr_get_segment(isym))->generation;
+              if (gen < static_generation) {
+                printf("WARNING: vfasl symbol already interned, but at generation %d: %p ", gen, TO_VOIDP(isym));
+                S_prin1(isym);
+                printf("\n");
+              }
             }
           }
         }
@@ -489,7 +494,7 @@ static void relink_code(ptr co, ptr sym_base, ptr *vspaces, uptr *vspace_offsets
         ptr tc = get_thread_context();
         iptr sz = size_reloc_table(RELOCSIZE(t));
         ptr new_t;
-        find_room(tc, space_data, static_generation, typemod, ptr_align(sz), new_t);
+        find_room(tc, space_data, static_generation, type_untyped, ptr_align(sz), new_t);
         memcpy(TO_VOIDP(new_t), TO_VOIDP(t), sz);
         t = new_t;
         CODERELOC(co) = t;
@@ -504,7 +509,7 @@ static void relink_code(ptr co, ptr sym_base, ptr *vspaces, uptr *vspace_offsets
     a = 0;
     n = 0;
     while (n < m) {
-      uptr entry, item_off, code_off; ptr obj;
+      uptr entry, item_off, code_off; ptr obj; I32 saved_off;
 
         entry = RELOCIT(t, n); n += 1;
         if (RELOC_EXTENDED_FORMAT(entry)) {
@@ -517,9 +522,10 @@ static void relink_code(ptr co, ptr sym_base, ptr *vspaces, uptr *vspace_offsets
         a += code_off;
 
         /* offset is stored in place of constant-loading code: */
-        memcpy(&obj, TO_VOIDP((ptr)((uptr)co + a)), sizeof(ptr));
+        memcpy(&saved_off, TO_VOIDP((ptr)((uptr)co + a)), sizeof(I32));
+        obj = (ptr)(iptr)saved_off;
 
-        if (IMMEDIATE(obj)) {
+        if (FIXMEDIATE(obj)) {
           if (Sfixnump(obj)) {
             int tag = VFASL_RELOC_TAG(obj);
             iptr pos = VFASL_RELOC_POS(obj);

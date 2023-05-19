@@ -583,6 +583,16 @@
                                 (loop k mode))
                            esc?))
                      (escapes! obj mode)))])]
+           [(stencil-vector? obj)
+            (start-compound! obj)
+            (let stencil-loop ([i 0])
+              (unless (= i (stencil-vector-length obj))
+                (loop (stencil-vector-ref obj i) (and mode #t))
+                (stencil-loop (add1 i))))
+            (end-compound!
+             obj
+             ;; always quoted:
+             #f)]
            [else #f])]))
     (when (or found-cycle? print-graph?)
       ;; Remove unwanted table entries:
@@ -692,10 +702,23 @@
                      'hasheq
                      (if (hash-eqv? obj)
                          'hasheqv
-                         'hash)))
+                         (if (hash-equal-always? obj)
+                             'hashalw
+                             'hash))))
                 (apply append l))
           l)))
-  
+
+  (define (convert-stencil-vector obj)
+    (let loop ([i 0])
+      (if (= i (stencil-vector-length obj))
+          '()
+          (cons (stencil-vector-ref obj i)
+                (loop (add1 i))))))
+
+  (define (stencil-opener obj)
+    (define mask (stencil-vector-mask obj))
+    (format "#<stencil ~a~a" mask (if (zero? mask) "" ": ")))
+
   ;; ------------------------------------------------------------
   ;; wr: write on a single line
   (define (wr* pport obj depth display? qd)
@@ -756,7 +779,8 @@
                    (lambda ()
                      (cond 
                       [(pair? l) 
-                       (if (and (eq? (do-remap (car l)) 'unquote)
+                       (if (and check?
+                                (eq? (do-remap (car l)) 'unquote)
                                 (not (equal? qd 1))
                                 (pair? (cdr l))
                                 (null? (cdr (cdr l))))
@@ -806,8 +830,8 @@
            #f #f
            (lambda ()
              (if (and qd (zero? qd))
-                 (wr-expr (list (make-unquoted 'mcons) (mcar obj) (mcdr obj))
-                          depth pair? car cdr "(" ")" qd)
+                 (wr-lst (list (make-unquoted 'mcons) (mcar obj) (mcdr obj))
+                         #f depth pair? car cdr "(" ")" qd)
                  (wr-expr obj depth mpair? mcar mcdr mpair-open mpair-close qd))))]
          [(null? obj)
           (let ([qd (to-quoted out qd obj)])
@@ -932,12 +956,22 @@
                               "#hasheq"
                               (if (hash-eqv? obj)
                                   "#hasheqv"
-                                  "#hash"))))
+                                  (if (hash-equal-always? obj)
+                                      "#hashalw"
+                                      "#hash")))))
                    (wr-lst (convert-hash obj expr?)
                            #f depth
                            pair? car cdr "(" ")" qd))))
               (parameterize ([print-hash-table #f])
                 ((if display? orig-display orig-write) obj pport)))]
+         [(stencil-vector? obj)
+          (check-expr-found
+           obj pport #t
+           #f #f
+           (lambda ()
+             (wr-lst (convert-stencil-vector obj)
+                     #f depth
+                     pair? car cdr (stencil-opener obj) ">" (and qd 1))))]
          [(boolean? obj)
           (out (if long-bools?
                    (if obj "#true" "#false")
@@ -1004,7 +1038,8 @@
                                  (and (custom-write? obj)
                                       (not (struct-type? obj)))
                                  (and (struct? obj) print-struct?)
-                                 (and (hash? obj) print-hash-table?)))]
+                                 (and (hash? obj) print-hash-table?)
+                                 (stencil-vector? obj)))]
              [graph-ref (if can-multi
                             (and found (hash-ref found obj #f))
                             #f)]
@@ -1048,8 +1083,8 @@
                                    qd))]
                        [(mpair? obj)
                         (if (and qd (zero? qd))
-                            (pp-pair (list (make-unquoted 'mcons) (mcar obj) (mcdr obj))
-                                     extra depth
+                            (pp-list (list (make-unquoted 'mcons) (mcar obj) (mcdr obj))
+                                     extra pp-expr #f depth
                                      pair? car cdr "(" ")"
                                      qd)
                             (pp-pair obj extra depth 
@@ -1058,8 +1093,8 @@
                        [(vector? obj)
                         (let ([qd (to-quoted out qd obj)])
                           (if (and qd (zero? qd))
-                              (pp-pair (cons (make-unquoted 'vector) (vector->list obj))
-                                       extra depth
+                              (pp-list (cons (make-unquoted 'vector) (vector->list obj))
+                                       extra pp-expr #f depth
                                        pair? car cdr pair-open pair-close
                                        qd)
                               (begin
@@ -1140,10 +1175,16 @@
                                      "#hasheq"
                                      (if (hash-eqv? obj)
                                          "#hasheqv"
-                                         "#hash"))))
+                                         (if (hash-equal-always? obj)
+                                             "#hashalw"
+                                             "#hash")))))
                           (pp-list (convert-hash obj expr?) extra pp-expr #f depth
                                    pair? car cdr pair-open pair-close
                                    qd))]
+                       [(stencil-vector? obj)
+                        (pp-list (convert-stencil-vector obj) extra pp-expr #f depth
+                                 pair? car cdr (stencil-opener obj) ">"
+                                 (and qd 1))]
                        [(and (box? obj) print-box?)
                         (let ([qd (to-quoted out qd obj)])
                           (if (and qd (zero? qd))
@@ -1481,10 +1522,10 @@
         ((do letrec-syntaxes+values)
          (and (no-sharing? expr 2 apair? acdr)
               pp-do))
-        ((module)
+        ((module send)
          (and (no-sharing? expr 2 apair? acdr)
               pp-module))
-        ((send syntax-case instantiate)
+        ((syntax-case instantiate)
          (and (no-sharing? expr 2 apair? acdr)
               pp-syntax-case))
         ((make-object)

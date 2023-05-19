@@ -86,18 +86,21 @@
   (define (test-un result proc x
                    #:pre [pre void]
                    #:post [post identity]
-                   #:branch? [branch? #f])
+                   #:branch? [branch? #f]
+                   #:literal-ok? [lit-ok? #t])
     (pre)
     (test result (compose post (eval proc)) x)
     (pre)
     (test result (compose post (eval `(lambda (x) (,proc x)))) x)
-    (pre)
-    (test result (compose post (eval `(lambda () (,proc ',x)))))
+    (when lit-ok?
+      (pre)
+      (test result (compose post (eval `(lambda () (,proc ',x))))))
     (when branch?
       (pre)
       (test (if result 'y 'n) (compose post (eval `(lambda (x) (if (,proc x) 'y 'n)))) x)
-      (pre)
-      (test (if result 'y 'n) (compose post (eval `(lambda () (if (,proc ',x) 'y 'n)))))))
+      (when lit-ok?
+        (pre)
+        (test (if result 'y 'n) (compose post (eval `(lambda () (if (,proc ',x) 'y 'n))))))))
   (define (test-zero result proc
                      #:pre [pre void]
                      #:post [post identity])
@@ -342,8 +345,12 @@
   (test-bin 8 'unsafe-fxlshift 8 0)
 
   (test-bin 2 'unsafe-fxrshift 32 4)
+  (test-bin -1 'unsafe-fxrshift -1 2)
   (test-bin 8 'unsafe-fxrshift 32 2)
   (test-bin 8 'unsafe-fxrshift 8 0)
+  (test-bin 2 'unsafe-fxrshift/logical 32 4)
+  (test-bin -1 'unsafe-fxrshift/logical -1 0)
+  (test-bin (most-positive-fixnum) 'unsafe-fxrshift/logical -1 1)
 
   (test-un 5 unsafe-fxabs 5)
   (test-un 5 unsafe-fxabs -5)
@@ -722,7 +729,9 @@
                   '(lambda (p ov nv) (unsafe-struct*-cas! p 1 ov nv)) p 199 202
                   #:pre (lambda () (unsafe-struct*-set! p 1 200))
                   #:post (lambda (x) (list x (unsafe-struct*-ref p 1)))
-                  #:literal-ok? #f)))
+                  #:literal-ok? #f))
+      (let ([p (make-posn 100 200 300)])
+        (test-un struct:posn 'unsafe-struct*-type p #:literal-ok? #f)))
     (define-values (prop:nothing nothing? nothing-ref) (make-struct-type-property 'nothing))
     (try-struct prop:nothing 5)
     (try-struct prop:procedure (lambda (s) 'hi!)))
@@ -853,7 +862,11 @@
 ;; Check that unsafe-weak-hash-iterate- ops do not segfault
 ;; when a key is collected before access; throw exception instead.
 ;; They are used for safe iteration in in-weak-hash- sequence forms
-  (let ()
+  (for ([make-weak-hash (list make-weak-hash make-ephemeron-hash)]
+        [unsafe-weak-hash-iterate-first (list unsafe-weak-hash-iterate-first unsafe-ephemeron-hash-iterate-first)]
+        [unsafe-weak-hash-iterate-key (list unsafe-weak-hash-iterate-key unsafe-ephemeron-hash-iterate-key)]
+        [unsafe-weak-hash-iterate-pair (list unsafe-weak-hash-iterate-pair unsafe-ephemeron-hash-iterate-pair)]
+        [unsafe-weak-hash-iterate-key+value (list unsafe-weak-hash-iterate-key+value unsafe-ephemeron-hash-iterate-key+value)])
     (define ht #f)
 
     ;; retain the list at first...
@@ -923,7 +936,11 @@
     (test-values '(gone gone) (lambda () (unsafe-mutable-hash-iterate-key+value ht i 'gone)))
     (test #f unsafe-mutable-hash-iterate-next ht i))
 
-  (let ()
+  (for ([make-weak-hash (list make-weak-hash make-ephemeron-hash)]
+        [unsafe-weak-hash-iterate-first (list unsafe-weak-hash-iterate-first unsafe-ephemeron-hash-iterate-first)]
+        [unsafe-weak-hash-iterate-key (list unsafe-weak-hash-iterate-key unsafe-ephemeron-hash-iterate-key)]
+        [unsafe-weak-hash-iterate-pair (list unsafe-weak-hash-iterate-pair unsafe-ephemeron-hash-iterate-pair)]
+        [unsafe-weak-hash-iterate-key+value (list unsafe-weak-hash-iterate-key+value unsafe-ephemeron-hash-iterate-key+value)])
     (define ht (make-weak-hash '((a . b))))
     (define i (unsafe-weak-hash-iterate-first ht))
 
@@ -1026,6 +1043,8 @@
     (test #f immutable? (make-bytes 0))
     (test #t immutable? (unsafe-string->immutable-string! (make-string 0)))
     (test #f immutable? (make-string 0))
+    (test #t immutable? (unsafe-string->immutable-string! (string-append)))
+    (test #f immutable? (string-append))
     (test #t immutable? (unsafe-vector*->immutable-vector! (make-vector 0)))
     (test #f immutable? (make-vector 0))))
 
@@ -1048,6 +1067,34 @@
 (test (+ (expt 2 100) #x55FF) bior (+ #x5555 (expt 2 100)))
 (test (+ (expt 2 100) #x55AA) bxor (+ #x5555 (expt 2 100)))
 
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-syntax-rule (module-claiming-unreachable-part name flag ...)
+  (module name racket/base
+    (require racket/unreachable)
+    (provide f1 f2)
+    (#%declare flag ...)
+    (struct s (a) #:authentic)
+    (define (f1 x)
+      (if (s? x)
+          (s-a x)
+          (assert-unreachable)))
+    (define (f2 x)
+      (if (s? x)
+          (s-a x)
+          (with-assert-unreachable
+            (raise-argument-error 'f2 "oops" x))))))
+
+(module-claiming-unreachable-part claims-unreachable-parts/safe)
+(module-claiming-unreachable-part claims-unreachable-parts/unsafe #:unsafe)
+
+(err/rt-test ((dynamic-require ''claims-unreachable-parts/safe 'f1) (arity-at-least 7)))
+(err/rt-test ((dynamic-require ''claims-unreachable-parts/safe 'f2) (arity-at-least 7)))
+
+(when (eq? 'chez-scheme (system-type 'vm))
+  (test 7 (dynamic-require ''claims-unreachable-parts/unsafe 'f1) (arity-at-least 7))
+  (test 7 (dynamic-require ''claims-unreachable-parts/unsafe 'f2) (arity-at-least 7)))
+  
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (report-errs)

@@ -234,9 +234,9 @@
 (test 0 'when (when (< 1 2) (cons 1 2) 0))
 (test-values '(0 10) (lambda () (when (< 1 2) (values 0 10))))
 (syntax-test #'when)
-(syntax-test #'(when))
+(syntax-test #'(when) #rx"missing test expression and body")
 (syntax-test #'(when . 1))
-(syntax-test #'(when 1))
+(syntax-test #'(when 1) #rx"missing body")
 (syntax-test #'(when 1 . 2))
 (error-test #'(when (values 1 2) 0) arity?)
 
@@ -246,9 +246,9 @@
 (test 0 'unless (unless (> 1 2) (cons 1 2) 0))
 (test-values '(0 10) (lambda () (unless (> 1 2) (values 0 10))))
 (syntax-test #'unless)
-(syntax-test #'(unless))
+(syntax-test #'(unless) #rx"missing test expression and body")
 (syntax-test #'(unless . 1))
-(syntax-test #'(unless 1))
+(syntax-test #'(unless 1) #rx"missing body")
 (syntax-test #'(unless 1 . 2))
 (error-test #'(unless (values 1 2) 0) arity?)
 
@@ -910,6 +910,20 @@
 (error-test #'(let () (define x 0)) exn:begin-possibly-implicit?)
 (error-test #'(let () (struct a ())) exn:begin-possibly-implicit?)
 (error-test #'(cond [#t (define x 0)]) exn:begin-possibly-implicit?)
+(error-test #'(letrec () (define x 0)) exn:begin-possibly-implicit?)
+(error-test #'(let-syntax () (define x 0)) exn:begin-possibly-implicit?)
+(error-test #'(letrec-values () () (define x 0)) exn:begin-possibly-implicit?)
+;; Check that the exceptions have the source location of the use-site.
+(define (exn:srclocs-from-syntax.rktl? x)
+  (and (exn:srclocs? x)
+       (for/and ([srcloc (in-list ((exn:srclocs-accessor x) x))])
+         (regexp-match? #px"syntax.rktl" (srcloc-source srcloc)))))
+(error-test #'(let () (define x 0)) exn:srclocs-from-syntax.rktl?)
+(error-test #'(let () (struct a ())) exn:srclocs-from-syntax.rktl?)
+(error-test #'(cond [#t (define x 0)]) exn:srclocs-from-syntax.rktl?)
+(error-test #'(letrec () (define x 0)) exn:srclocs-from-syntax.rktl?)
+(error-test #'(let-syntax () (define x 0)) exn:srclocs-from-syntax.rktl?)
+(error-test #'(letrec-values () () (define x 0)) exn:srclocs-from-syntax.rktl?)
 
 ;; Weird test: check that `eval` does not wrap its last argument
 ;; in a prompt, which means that `(foo 10)` replaces the continuation
@@ -956,7 +970,17 @@
   (test #f sync/timeout 0 pr)
   (test 'done force pr)
   (test #t promise-forced? pr)
+  (test #f promise-running? pr)
   (test (void) sync/timeout 0 pr))
+
+(let* ([p (delay/sync (sync never-evt))]
+       [th (thread (lambda () (force p)))])
+  (test #f promise-forced? p)
+  (test #f promise-running? p)
+  (sync (system-idle-evt))
+  (test #f promise-forced? p)
+  (test #t promise-running? p)
+  (kill-thread th))
 
 (test '(list 3 4) 'quasiquote `(list ,(+ 1 2) 4))
 (test '(list a (quote a)) 'quasiquote (let ((name 'a)) `(list ,name ',name)))
@@ -1368,6 +1392,26 @@
 (syntax-test #'(let ([#%app 5])
 		 (+ 1 2)))
 
+(err/rt-test ('oops (/ 1 0)) exn:fail:contract:divide-by-zero?)
+(test "#<procedure:*>\n"
+      'left-to-right-error
+      (let ([o (open-output-string)])
+        (parameterize ([current-output-port o])
+          (with-handlers ([exn:fail? void])
+            ((void)
+             (letrec ((E (writeln *))
+                      (H 1))
+               (let () H)))))
+        (get-output-string o)))
+
+
+(err/rt-test ((if (zero? (random 1)) 'oops 'nope) (/ 1 0)) exn:fail:contract:divide-by-zero?)
+(err/rt-test ((void)
+              (letrec ((E (/ 1 0))
+                       (H 1))
+                (let () H)))
+             exn:fail:contract:divide-by-zero?)
+
 (test 3 '#%app (#%app + 1 2))
 (syntax-test #'())
 (syntax-test #'(#%app))
@@ -1530,6 +1574,11 @@
                                                                        [(_) (abcdefg 10)]
                                                                        [(_ x) (+ 3 x)])])
                                                            (abcdefg))))
+(test 10 'splicing-letrec-syntax (let ()
+                                   (splicing-letrec-syntax ([m (syntax-rules ()
+                                                                 [(_ id) (define id 10)])])
+                                     (m x))
+                                   x))
 (test 12 'splicing-let-syntax (splicing-let-syntax ([abcdefg (syntax-rules ()
                                                                [(_) 12])])
                                                    (abcdefg)))
@@ -1542,6 +1591,12 @@
                                                                  [(_) (+ 2 (abcdefg 9))]
                                                                  [(_ ?) 77])])
                                                      (abcdefg))))
+(test 10 'splicing-let-syntax (let ()
+                                (splicing-let-syntax ([m (syntax-rules ()
+                                                           [(_ id) (define id 10)])])
+                                  (m x))
+                                x))
+
 (define expand-test-use-toplevel? #t)
 (splicing-let-syntax ([abcdefg (syntax-rules ()
                                  [(_) 8])])
@@ -1583,6 +1638,15 @@
                                     (define y a)))
         (list x y)))
 
+(test 11 'nested-splicing-def-use-site
+      (let ()
+        (splicing-let ([z 1])
+          (define-syntax-rule (m a b)
+            (splicing-let ([a 10])
+              (define b (+ a z))))
+          (m x y))
+        y))
+
 (test '(1 2)
       'nested-splicing-syntax
       (let ()
@@ -1604,6 +1668,17 @@
                                         [x q])
                            (define (z) x))
                          (z)))
+(test 10 'splicing-let (let ()
+                         (define-syntax-rule (m a b)
+                           (splicing-let ([a 10])
+                             (define b a)))
+                         (m x y)
+                         y))
+(test #t 'splicing-let (let ()
+                         (splicing-let ()
+                           (define id1 (quote-syntax x)))
+                         (bound-identifier=? id1 (quote-syntax x))))
+
 (test 81 'splicing-letrec (let ()
                             (define q 77)
                             (splicing-letrec ([q 81]
@@ -1630,6 +1705,15 @@
                                                  [q (lambda () 82)])
                                                 (define (z) x))
                                ((z)))))
+
+(test 10 'splicing-letrec
+      (let ()
+        (define-syntax-rule (m a b)
+          (splicing-letrec ([a 10])
+            (define b a)))
+        (m x y)
+        y))
+
 (err/rt-test (eval
               '(begin
                  (splicing-letrec ([x q]
@@ -1719,6 +1803,18 @@
          (define-syntax outer-x (make-rename-transformer #'x)))
         outer-x))
 
+(test 10 'splicing-local
+      (let ()
+        (define-syntax-rule (m a b)
+          (splicing-local ((define a 10))
+            (define b a)))
+        (m x y)
+        y))
+(test #t 'splicing-local (let ()
+                           (splicing-local ()
+                             (define id1 (quote-syntax x)))
+                           (bound-identifier=? id1 (quote-syntax x))))
+
 (test 10 'splicing+begin-for-syntax
       (eval
        '(begin
@@ -1792,6 +1888,28 @@
           (splicing-parameterize ([param 42])
             (deflocal x (param))
             x))))
+(test 10 'splicing-parameterize
+      (let ()
+        (define x (make-parameter #f))
+        (define-syntax-rule (m a b)
+          (splicing-parameterize ([a 10])
+            (define b (a))))
+        (m x y)
+        y))
+(test 11 'splicing-parameterize
+      (let ()
+        (define z (make-parameter #f))
+        (splicing-parameterize ([z 1])
+          (define-syntax-rule (m a b)
+            (splicing-let ([a 10])
+              (define b (+ a (z)))))
+          (m x y))
+        y))
+(test #t 'splicing-parameterize
+      (let ()
+        (splicing-parameterize ()
+          (define id1 (quote-syntax x)))
+        (bound-identifier=? id1 (quote-syntax x))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check keyword & optionals for define-syntax 
@@ -2035,6 +2153,65 @@
 (compile '(#%variable-reference))
 (expand '(#%variable-reference))
 
+(test #t variable-reference? (#%variable-reference (#%top . test)))
+(test #t variable-reference? (#%variable-reference (#%top . list)))
+
+(define this-is-going-to-be-defined-as-syntax 5)
+(define-syntax this-is-going-to-be-defined-as-syntax #f)
+(syntax-test #'(#%variable-reference this-is-going-to-be-defined-as-syntax))
+(test #t variable-reference? (#%variable-reference (#%top . this-is-going-to-be-defined-as-syntax)))
+(test 5 values (#%top . this-is-going-to-be-defined-as-syntax))
+
+(define this-is-going-to-be-defined-as-macro 5)
+(define-syntax this-is-going-to-be-defined-as-macro (lambda (stx) #f))
+(syntax-test #'(#%variable-reference this-is-going-to-be-defined-as-macro))
+(test #t variable-reference? (#%variable-reference (#%top . this-is-going-to-be-defined-as-macro)))
+(test 5 values (#%top . this-is-going-to-be-defined-as-macro))
+
+(test #t variable-reference-constant? (#%variable-reference cons))
+(test #f variable-reference-constant? (#%variable-reference (#%top . cons)))
+
+(test #t procedure? (lambda () (#%variable-reference assume-this-name-is-not-defined-anywhere)))
+
+(syntax-test #'(let ([local #f]) (#%variable-reference (#%top . local))))
+
+(syntax-test #'(module m racket/base
+                 (let ([local #f])
+                   (#%variable-reference (#%top . local)))))
+(syntax-test #'(module m racket/base
+                 (require (for-syntax racket/base))
+                 (define-syntax (m stx) #'#f)
+                 (#%top . m)))
+(syntax-test #'(module m racket/base
+                 (require (for-syntax racket/base))
+                 (define-syntax m #f)
+                 (#%top . m)))
+(syntax-test #'(module m racket/base
+                 (require (for-syntax racket/base))
+                 (define-syntax (m stx) #'#f)
+                 (#%variable-reference (#%top . m))))
+(syntax-test #'(module m racket/base
+                 (require (for-syntax racket/base))
+                 (define-syntax m #f)
+                 (#%variable-reference (#%top . m))))
+(syntax-test #'(module m racket/base
+                 (require (for-syntax racket/base))
+                 (define-syntax (m stx) #'#f)
+                 (#%variable-reference m)))
+(syntax-test #'(module m racket/base
+                 (require (for-syntax racket/base))
+                 (define-syntax m #f)
+                 (#%variable-reference m)))
+(syntax-test #'(module m racket/base
+                 (#%variable-reference not-defined-anywhere)))
+(syntax-test #'(module m racket/base
+                 (#%top . not-defined-anywhere)))
+(syntax-test #'(module m racket/base
+                 (#%variable-reference (#%top . not-defined-anywhere))))
+
+(syntax-test #'(#%variable-reference (oops . x)))
+(syntax-test #'(#%variable-reference ((this is a test) . x)))
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check marshal & unmarshal of a syntax object
 ;; containing a list with a hash table
@@ -2246,6 +2423,7 @@
 
   (test #t check '(a b))
   (test #t check '#(a b #hash((c . 9))))
+  (test #t check '#(a b #hashalw(("c" . 10) ("d" . 11))))
   (test #t check '(#hasheqv((10 . 11) (12 . 13)) #&"str" #s(color r G #b0)))
   (test #t check '(#hasheq((x . 11) (y . 13) (z . #f)) (1 . 2))))
 
@@ -2369,6 +2547,17 @@
                        ([i '(1)])
                (values (values x y)))
              exn:fail:contract:arity?)
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Regression test to make that an ok reference to `unsafe-undefined`
+;; isn't mangled to a disallowed reference:
+
+(parameterize ([current-code-inspector (current-code-inspector)])
+  (parameterize ([current-namespace (make-base-namespace)])
+    (eval '(module test racket/base
+             (provide t)
+             (define (t #:a [a "12345678"]) (list a))
+             (t)))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

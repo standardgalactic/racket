@@ -693,7 +693,7 @@
 
 (let ([s (make-semaphore)]
       [s-t (make-semaphore)]
-	    [l (tcp-listen 0 5 #t)])
+      [l (tcp-listen 0 5 #t)])
   (let ([t (thread
 	    (lambda ()
 	      (sync s-t)))]
@@ -709,8 +709,7 @@
 			 (set! v (wait #f s t l r)))))])
 	    (sync (system-idle-evt))
 	    (break-thread bt)
-            (sync (system-idle-evt))
-	    )
+            (sync (system-idle-evt)))
 	  (test 'break 'broken-wait v)))
 
       (define (try-all-blocked)
@@ -741,7 +740,6 @@
       (test t sync s t l r)
 
       (set! t (thread (lambda () (semaphore-wait (make-semaphore)))))
-
       (let-values ([(cr cw) (tcp-connect "localhost" portnum)])
 	(test l sync s t l r)
 	(test l sync s t l r)
@@ -805,7 +803,10 @@
 	  (test cr sync s t l sr cr)
 
 	  (close-output-port cw)
-	  (test sr sync s t l sr))))
+	  (test sr sync s t l sr)
+
+          (close-input-port sr)
+          (close-input-port cr))))
     (tcp-close l))))
 
 ;; Test limited pipe output waiting:
@@ -1275,6 +1276,22 @@
   (test #f thread-running? t1)
   (test #f thread-running? t2))
 
+;; Attempting to shut down a thread without the managing custodian
+(let ([t (thread (lambda () (sync (make-semaphore))))])
+  (parameterize ([current-custodian (make-custodian)])
+    (err/rt-test (thread-suspend t) exn:fail:contract? #rx"does not solely manage")))
+
+(let ([c1 (make-custodian)]
+      [c2 (make-custodian)])
+  (define t (parameterize ([current-custodian c1])
+              (thread (lambda () (sync (make-semaphore))))))
+  (thread-resume t c2)
+  (parameterize ([current-custodian c1])
+    (err/rt-test (thread-suspend t) exn:fail:contract? #rx"does not solely manage"))
+  (parameterize ([current-custodian c2])
+    (err/rt-test (thread-suspend t) exn:fail:contract? #rx"does not solely manage"))
+  (test (void) thread-suspend t))
+
 ;; ----------------------------------------
 ;; plumbers
 
@@ -1648,6 +1665,18 @@
 (test #t integer? (current-process-milliseconds (thread void)))
 (test #t integer? (current-process-milliseconds 'subprocesses))
 (err/rt-test (current-process-milliseconds 'other))
+
+;; --------------------
+;; Check `thread-break` on a thread kiled while it tried to sync:
+
+(let ()
+  (define t (thread (lambda () (sync never-evt))))
+  (sync (system-idle-evt))
+  (kill-thread t)
+  (test #t thread-dead? t)
+  (sync (system-idle-evt))
+  (test (void) break-thread t)
+  (test #t thread-dead? t))
 
 ; --------------------
 

@@ -152,12 +152,15 @@
 (test-ser (procedure-arity (lambda (x . y) 10)))
 (test-ser (make-immutable-hasheq '((1 . a) (2 . b))))
 (test-ser (make-immutable-hasheqv '((1 . a) (2 . b))))
+(test-ser (make-immutable-hashalw '(("x" . a) ("y" . b))))
 (test-ser (make-immutable-hash '(("x" . a) ("y" . b))))
 (test-ser (mk-ht make-hasheq))
 (test-ser (mk-ht make-hasheqv))
+(test-ser (mk-ht make-hashalw))
 (test-ser (mk-ht make-hash))
 (test-ser (mk-ht make-weak-hasheq))
 (test-ser (mk-ht make-weak-hasheqv))
+(test-ser (mk-ht make-weak-hashalw))
 (test-ser (mk-ht make-weak-hash))
 (test-ser #s(a 0 1 2))
 (test-ser #s((a q 2) 0 1 2))
@@ -165,6 +168,7 @@
 (test-ser (flvector 0.1 2.0 30e3))
 
 (test-ser (set 'set 0 1 2))
+(test-ser (setalw 'setalw 0 1 2))
 (test-ser (seteqv 'seteqv 0 1 2))
 (test-ser (seteq 'seteq 0 1 2))
 
@@ -509,6 +513,27 @@
 
 (test #t pair? (serialize (new s:bad% [foo 10])))
 (err/rt-test (deserialize (serialize (new s:bad% [foo 10]))) exn:fail:object?)
+
+;; ----------------------------------------
+;; Class contracts & serialization
+
+(define class+contract+serialize-foo<%>
+  (interface ()
+    [foo-method (->m any/c)]))
+(define-serializable-class* class+contract+serialize-foo% object% (class+contract+serialize-foo<%>)
+  (inspect #f)
+  (init-field [v #hasheq()])
+  (define/public (foo-method)
+    'result)
+  (super-new))
+
+(let ()
+  (define inst
+    (new class+contract+serialize-foo%))
+
+  (test #t is-a? inst class+contract+serialize-foo%)
+  (test #t is-a? (deserialize (serialize inst)) class+contract+serialize-foo%)
+  (test 'result values (send (deserialize (serialize inst)) foo-method)))
 
 ;; ----------------------------------------
 

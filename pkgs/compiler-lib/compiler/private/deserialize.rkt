@@ -1,7 +1,9 @@
 #lang racket/base
 (require racket/linklet
          compiler/zo-parse
-         compiler/zo-marshal)
+         compiler/zo-marshal
+         compiler/faslable-correlated
+         racket/phase+space)
 
 ;; Re-implement just enough deserialization to deal with 'decl
 ;; linklets, so we can get `required`, etc.
@@ -83,13 +85,19 @@
           (values (reverse rev) rest)]
          [(#:mpi)
           (values (vector-ref mpis (cadr r)) (cddr r))]
-         [(#:hash #:hasheq #:hasheqv)
+         [(#:hash #:hashalw #:hasheq #:hasheqv #:hasheqv/phase+space)
           (define ht (case i
                        [(#:hash) (hash)]
+                       [(#:hashalw) (hashalw)]
                        [(#:hasheq) (hasheq)]
-                       [(#:hasheqv) (hasheqv)]))
-          (for/fold ([ht ht] [r (cddr r)]) ([i (in-range (cadr r))])
-            (define-values (k k-rest) (loop r))
+                       [(#:hasheqv  #:hasheqv/phase+space) (hasheqv)]))
+          (for/fold ([ht ht] [r (cddr r)]) ([j (in-range (cadr r))])
+            (define-values (k k-rest)
+              (if (and (eq? i '#:hasheqv/phase+space)
+                       (pair? (car r)))
+                  (values (phase+space (caar r) (cdar r))
+                          (cdr r))
+                  (loop r)))
             (define-values (v v-rest) (loop k-rest))
             (values (hash-set ht k v) v-rest))]
          [(#:provided)
@@ -108,7 +116,10 @@
                  (string? i)
                  (null? i)
                  (hash? i)
-                 (boolean? i))
+                 (boolean? i)
+                 (and (pair? i)
+                      (phase? (car i))
+                      (symbol? (cdr i))))
              (values i (cdr r))]
             [else
              (error 'deserialize "unsupported instruction: ~s" i)])])])))
@@ -138,25 +149,7 @@
 
 ;; ----------------------------------------
 
-(struct faslable-correlated-linklet (expr name)
-  #:prefab)
-
-(struct faslable-correlated (e source position line column span props)
-  #:prefab)
-
-(define (strip-correlated v)
-  (let strip ([v v])
-    (cond
-      [(pair? v)
-       (cons (strip (car v))
-             (strip (cdr v)))]
-      [(faslable-correlated? v)
-       (strip (faslable-correlated-e v))]
-      [else v])))
-
-;; ----------------------------------------
-
-;; Returns (values mpi-vector requires provides phase-to-link-modules)
+;; Returns (values mpi-vector requires recur-requires provides phase-to-link-modules)
 (define (deserialize-requires-and-provides l)
   (define ht (linkl-bundle-table l))
   (let ([data-l (hash-ref ht 'data #f)]  ; for module
@@ -184,6 +177,7 @@
                                                  data-i)))
        (values (instance-variable-value data-i '.mpi-vector)
                (instance-variable-value decl-i 'requires)
+               (instance-variable-value decl-i 'recur-requires)
                (instance-variable-value decl-i 'provides)
                (instance-variable-value decl-i 'phase-to-link-modules))]
       [link-l
@@ -192,6 +186,7 @@
                                                  (make-eager-instance))))
        (values (instance-variable-value link-i '.mpi-vector)
                '()
+               '()
                '#hasheqv()
                (instance-variable-value link-i 'phase-to-link-modules))]
-      [else (values '#() '() '#hasheqv() '#hasheqv())])))
+      [else (values '#() '() '() '#hasheqv() '#hasheqv())])))

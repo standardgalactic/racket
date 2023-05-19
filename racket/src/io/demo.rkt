@@ -15,6 +15,8 @@
 (path->string (current-directory))
 (set-string->number?! string->number)
 
+(get-machine-info)
+
 (let ()
   (define-values (i o) (make-pipe 4096))
 
@@ -653,6 +655,8 @@
   (parameterize ([current-locale "en_US.ISO8859-1"])
     (test "Éric" (string-locale-downcase "Éric"))))
 
+(when (eq? 'macosx (system-type))
+  (test "\U1F600" (string-locale-downcase "\U1F600")))
 
 ;; ----------------------------------------
 
@@ -736,6 +740,10 @@
 (print-test '#:|apple pie| "'#:|apple pie|")
 (print-test '#:1.0 "'#:1.0")
 (print-test 1.0 "1.0")
+
+(print-test (stencil-vector 3 "a" 'b) "#<stencil 3: \"a\" b>")
+(print-test (stencil-vector 3 "a" 'b) "#<stencil 3: a b>" #:print display)
+(print-test (stencil-vector 3 "a" 'b) "#<stencil 3: \"a\" b>" #:print write)
 
 ;; ----------------------------------------
 

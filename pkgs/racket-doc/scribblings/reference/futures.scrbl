@@ -127,11 +127,12 @@ execute through a call to @racket[touch], however.
   Returns the number of parallel computation units (e.g., processors or
   cores) that are available on the current machine.
 
+   This is the same binding as available from @racketmodname[racket/place].
 }
 
 @deftogether[[
-@defform[(for/async (for-clause ...) body ...+)]
-@defform[(for*/async (for-clause ...) body ...+)]]]{
+@defform[(for/async (for-clause ...) body-or-break ... body)]
+@defform[(for*/async (for-clause ...) body-or-break ... body)]]]{
 
 Like @racket[for] and @racket[for*], but each iteration of the
 @racket[body] is executed in a separate @racket[future], and

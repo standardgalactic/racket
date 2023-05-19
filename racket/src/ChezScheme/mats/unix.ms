@@ -72,8 +72,8 @@
   (mat system
     (eqv? (with-output-to-file "testfile.ss" void '(replace)) (void))
     (begin
-      (system (format "~:[~;/pkg~]/bin/rm testfile.ss" (embedded?)))
-      (system (format "~:[~;/pkg~]/bin/echo hello > testfile.ss" (embedded?)))
+      (system "rm -f testfile.ss")
+      (system "echo hello > testfile.ss")
       (let ([p (open-input-file "testfile.ss")])
         (and (eq? (read p) 'hello)
              (begin (close-input-port p) #t))))
@@ -363,7 +363,7 @@
       (eq? (sleep (make-time 'time-duration 0 2)) (void))
       (symbol? (with-input-from-file "testfile.ss" read))
       ; following should be time<?, but access times are not updated on some
-      ; file systems, particulary nfs file systems.  but we wouldn't expect
+      ; file systems, particularly nfs file systems.  but we wouldn't expect
       ; time to run backwards (except for one hour for DST)
       (time<=? $taccess (file-access-time "testfile.ss"))
       (begin
